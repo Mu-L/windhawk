@@ -95,6 +95,7 @@ class CustomizationSession {
        private:
         std::optional<StorageManager::ModConfigChangeNotification>
             m_modConfigChangeNotification;
+        HANDLE m_sessionLogonEvent = nullptr;
     };
 
     static std::optional<CustomizationSession>& GetInstance();

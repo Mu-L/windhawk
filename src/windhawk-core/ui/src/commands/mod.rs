@@ -8,6 +8,7 @@ pub mod app;
 pub mod dev;
 pub mod dev_stub;
 pub mod devtools;
+pub mod hotkey;
 pub mod logwindow;
 pub mod mods;
 pub mod repo;
@@ -16,7 +17,7 @@ pub mod userdata;
 
 use serde_json::json;
 use windhawk_core_host::{HostError, SessionApiExt};
-use windhawk_core_protocol::AppSettings;
+use windhawk_core_protocol::{AppSettings, ErrorCode, WireError};
 
 use crate::ipc::bridge::BridgeCtx;
 
@@ -52,4 +53,13 @@ pub(crate) fn app_language(ctx: &BridgeCtx) -> String {
 /// installed-state update flag, mirroring the GUI.
 pub(crate) fn check_for_updates(settings: &AppSettings) -> bool {
     !settings.disable_update_check
+}
+
+/// A file-dialog (COM/shell) failure as an internal wire error, for the handlers
+/// that run a native picker (`crate::file_dialog`) around their work.
+pub(crate) fn dialog_error(message: &str) -> HostError {
+    HostError::wire(WireError::new(
+        ErrorCode::Internal,
+        format!("file dialog: {message}"),
+    ))
 }

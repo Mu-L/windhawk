@@ -1,25 +1,36 @@
-import { useRef } from 'react';
+import { type ReactNode, useRef } from 'react';
 import type { Components } from 'react-markdown';
 import ReactMarkdown from 'react-markdown';
 import rehypeSlug from 'rehype-slug';
+import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import styled from 'styled-components';
 import type { PluggableList } from 'unified';
 import { sanitizeUrl } from '../utils';
 import { findFragmentTarget, getFragmentId } from './markdownFragmentLinks';
-/// #if EXTENSION
+/// #if APP
 import rehypeRaw from 'rehype-raw';
 import rehypeSanitize from 'rehype-sanitize';
 /// #endif
 
-const ReactMarkdownStyleWrapper = styled.div<{ $direction?: 'ltr' | 'rtl' }>`
+// As the dir attribute takes it; 'auto' follows the text's own script.
+type Direction = 'ltr' | 'rtl' | 'auto';
+
+const ReactMarkdownStyleWrapper = styled.div<{ $direction?: Direction }>`
   // Word-wrap long lines.
   overflow-wrap: break-word;
 
+  // The wrapper's dir attribute sets the direction; the alignment follows it
+  // rather than whatever an ancestor aligns to.
   ${props => props.$direction && `
-    direction: ${props.$direction};
-    text-align: ${props.$direction === 'rtl' ? 'right' : 'left'};
+    text-align: start;
   `}
+
+  // A paragraph holding nothing but a dropped image would still take its
+  // margin.
+  p:empty {
+    display: none;
+  }
 
   // Inline code style.
 
@@ -67,10 +78,29 @@ interface Props {
   markdown: string;
   components?: Components;
   allowHtml?: boolean;
-  direction?: 'ltr' | 'rtl';
+  // Off, an image is dropped, alt text and all.
+  allowImages?: boolean;
+  // A newline inside a paragraph as a line break rather than a soft wrap: how
+  // text typed into a box reads, as against a document authored in markdown.
+  breaks?: boolean;
+  direction?: Direction;
+  className?: string;
+  // A say over how a link out of the document is drawn, given its sanitized
+  // href: what it returns is drawn in place of the plain anchor, and undefined
+  // leaves the anchor as it is. A link into the document is not offered.
+  renderLink?: (href: string, children: ReactNode) => ReactNode | undefined;
 }
 
-function ReactMarkdownCustom({ markdown, components, allowHtml = false, direction }: Props) {
+function ReactMarkdownCustom({
+  markdown,
+  components,
+  allowHtml = false,
+  allowImages = true,
+  breaks = false,
+  direction,
+  className,
+  renderLink,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Custom link component that sanitizes URLs
@@ -78,7 +108,7 @@ function ReactMarkdownCustom({ markdown, components, allowHtml = false, directio
     a: ({ node, href, children, ...props }) => {
       // A fragment href names a heading of this document rather than a place to
       // navigate to, and sanitizeUrl has no scheme to validate in one. The
-      // extension and Tauri builds mount a hash router, which would read a
+      // app build mounts a hash router, which would read a
       // followed fragment as a route and leave the document, so the move is made
       // here instead of by the browser.
       const fragmentId = getFragmentId(href);
@@ -101,6 +131,12 @@ function ReactMarkdownCustom({ markdown, components, allowHtml = false, directio
       }
 
       const sanitizedHref = sanitizeUrl(href);
+      if (sanitizedHref !== undefined && renderLink) {
+        const rendered = renderLink(sanitizedHref, children);
+        if (rendered !== undefined) {
+          return <>{rendered}</>;
+        }
+      }
       return <a href={sanitizedHref} {...props}>{children}</a>;
     }
   };
@@ -157,7 +193,7 @@ function ReactMarkdownCustom({ markdown, components, allowHtml = false, directio
 
   const rehypePlugins: PluggableList = [rehypeSlug];
   if (allowHtml) {
-    /// #if EXTENSION
+    /// #if APP
     // CRITICAL: rehype-raw MUST come before rehype-sanitize
     rehypePlugins.push(rehypeRaw, [rehypeSanitize, sanitizeSchema]);
     /// #else
@@ -166,14 +202,23 @@ function ReactMarkdownCustom({ markdown, components, allowHtml = false, directio
   }
 
   const remarkPlugins: PluggableList = [remarkGfm];
+  if (breaks) {
+    remarkPlugins.push(remarkBreaks);
+  }
 
   return (
-    <ReactMarkdownStyleWrapper ref={containerRef} $direction={direction}>
+    <ReactMarkdownStyleWrapper
+      ref={containerRef}
+      className={className}
+      dir={direction}
+      $direction={direction}
+    >
       <ReactMarkdown
         children={markdown}
         components={mergedComponents}
         rehypePlugins={rehypePlugins}
         remarkPlugins={remarkPlugins}
+        disallowedElements={allowImages ? undefined : ['img']}
       />
     </ReactMarkdownStyleWrapper>
   );

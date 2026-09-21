@@ -1,5 +1,6 @@
 #include "stdafx.h"
 
+#include "dark_mode.h"
 #include "functions.h"
 #include "logger.h"
 #include "main_window.h"
@@ -74,7 +75,7 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance,
 
     SetCurrentProcessExplicitAppUserModelID(L"RamenSoftware.Windhawk");
 
-    Functions::EnableDarkModeMenus();
+    DarkMode::EnableForMenus();
 
     Action action = Action::kDefault;
     if (DoesParamExist(L"-service")) {

@@ -2,6 +2,7 @@
 
 #include "task_manager_dlg.h"
 
+#include "dark_mode.h"
 #include "logger.h"
 #include "process_state.h"
 #include "session_metadata.h"
@@ -157,6 +158,11 @@ BOOL CTaskManagerDlg::OnInitDialog(CWindow wndFocus, LPARAM lInitParam) {
     m_ptMinTrackSize.x /= 2;
     m_ptMinTrackSize.y /= 2;
 
+    if (HWND hGrip = GetDlgItem(ATL_IDW_STATUS_BAR)) {
+        ::SetWindowSubclass(hGrip, GripSubclassProc, 0,
+                            reinterpret_cast<DWORD_PTR>(this));
+    }
+
     if (m_dialogOptions.autonomousMode) {
         ModifyStyle(WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU, 0);
         ModifyStyleEx(0, WS_EX_TOOLWINDOW);
@@ -176,7 +182,12 @@ BOOL CTaskManagerDlg::OnInitDialog(CWindow wndFocus, LPARAM lInitParam) {
 
     InitTaskList();
 
+    ::SetWindowSubclass(m_taskListSort, ListViewSubclassProc, 0,
+                        reinterpret_cast<DWORD_PTR>(this));
+
     LoadLanguageStrings();
+
+    ApplyDarkMode();
 
     SetTimer(Timer::kUpdateProcessesStatus, kUpdateProcessesStatusInterval);
 
@@ -254,6 +265,30 @@ void CTaskManagerDlg::OnDpiChanged(UINT nDpiX, UINT nDpiY, PRECT pRect) {
     ReloadMainIcon();
 }
 
+HBRUSH CTaskManagerDlg::OnCtlColorDlg(CDCHandle dc, CWindow wnd) {
+    if (m_darkMode) {
+        return m_darkBgBrush;
+    }
+    SetMsgHandled(FALSE);
+    return nullptr;
+}
+
+HBRUSH CTaskManagerDlg::OnCtlColorBtn(CDCHandle dc, CButton button) {
+    if (m_darkMode) {
+        dc.SetTextColor(DarkMode::kTextColor);
+        dc.SetBkColor(DarkMode::kBgColor);
+        return m_darkBgBrush;
+    }
+    SetMsgHandled(FALSE);
+    return nullptr;
+}
+
+void CTaskManagerDlg::OnSettingChange(UINT uFlags, LPCTSTR lpszSection) {
+    if (lpszSection && _wcsicmp(lpszSection, L"ImmersiveColorSet") == 0) {
+        ApplyDarkMode();
+    }
+}
+
 void CTaskManagerDlg::OnOK(UINT uNotifyCode, int nID, CWindow wndCtl) {
     if (m_dialogOptions.runButtonCallback) {
         m_dialogOptions.runButtonCallback(m_hWnd);
@@ -295,6 +330,80 @@ BOOL CTaskManagerDlg::KillTimer(Timer nIDEvent) {
     return CDialogImpl::KillTimer(static_cast<UINT_PTR>(nIDEvent));
 }
 
+// The header paints its text in the light theme's color even with the dark
+// theme, so it's set here through the header's custom draw notifications.
+// static
+LRESULT CALLBACK CTaskManagerDlg::ListViewSubclassProc(HWND hWnd,
+                                                       UINT uMsg,
+                                                       WPARAM wParam,
+                                                       LPARAM lParam,
+                                                       UINT_PTR uIdSubclass,
+                                                       DWORD_PTR dwRefData) {
+    auto* pThis = reinterpret_cast<CTaskManagerDlg*>(dwRefData);
+    if (uMsg == WM_NOTIFY && pThis->m_darkMode) {
+        auto* nmhdr = reinterpret_cast<LPNMHDR>(lParam);
+        if (nmhdr->code == NM_CUSTOMDRAW &&
+            nmhdr->hwndFrom == pThis->m_taskListSort.GetHeader()) {
+            auto* nmcd = reinterpret_cast<LPNMCUSTOMDRAW>(lParam);
+            if (nmcd->dwDrawStage == CDDS_PREPAINT) {
+                return CDRF_NOTIFYITEMDRAW;
+            }
+
+            if (nmcd->dwDrawStage == CDDS_ITEMPREPAINT) {
+                ::SetTextColor(nmcd->hdc, DarkMode::kTextColor);
+                return CDRF_DODEFAULT;
+            }
+        }
+    }
+
+    return ::DefSubclassProc(hWnd, uMsg, wParam, lParam);
+}
+
+// static
+LRESULT CALLBACK CTaskManagerDlg::GripSubclassProc(HWND hWnd,
+                                                   UINT uMsg,
+                                                   WPARAM wParam,
+                                                   LPARAM lParam,
+                                                   UINT_PTR uIdSubclass,
+                                                   DWORD_PTR dwRefData) {
+    auto* pThis = reinterpret_cast<CTaskManagerDlg*>(dwRefData);
+    if (pThis->m_darkMode) {
+        if (uMsg == WM_ERASEBKGND) {
+            return 1;
+        }
+
+        if (uMsg == WM_PAINT) {
+            PAINTSTRUCT ps;
+            HDC hdc = ::BeginPaint(hWnd, &ps);
+            RECT rc;
+            ::GetClientRect(hWnd, &rc);
+            ::FillRect(hdc, &rc, pThis->m_darkBgBrush);
+
+            // Draw grip dots.
+            CBrush dotBrush;
+            dotBrush.CreateSolidBrush(RGB(96, 96, 96));
+            UINT dpi = Functions::GetDpiForWindowWithFallback(hWnd);
+            int d = MulDiv(2, dpi, 96);
+            int s = MulDiv(4, dpi, 96);
+            int x0 = rc.right - MulDiv(3, dpi, 96);
+            int y0 = rc.bottom - MulDiv(3, dpi, 96);
+            for (int diag = 0; diag < 3; diag++) {
+                for (int i = 0; i <= diag; i++) {
+                    int x = x0 - (diag - i) * s;
+                    int y = y0 - i * s;
+                    RECT dot = {x - d, y - d, x, y};
+                    ::FillRect(hdc, &dot, dotBrush);
+                }
+            }
+
+            ::EndPaint(hWnd, &ps);
+            return 0;
+        }
+    }
+
+    return ::DefSubclassProc(hWnd, uMsg, wParam, lParam);
+}
+
 void CTaskManagerDlg::ReloadMainIcon() {
     UINT dpi = Functions::GetDpiForWindowWithFallback(m_hWnd);
 
@@ -311,6 +420,37 @@ void CTaskManagerDlg::ReloadMainIcon() {
         Functions::GetSystemMetricsForDpiWithFallback(SM_CXSMICON, dpi),
         Functions::GetSystemMetricsForDpiWithFallback(SM_CYSMICON, dpi));
     CIcon prevMainIconSmall = SetIcon(mainIconSmall, FALSE);
+}
+
+void CTaskManagerDlg::ApplyDarkMode() {
+    if (!DarkMode::IsSupported()) {
+        return;
+    }
+
+    m_darkMode = DarkMode::IsActive();
+
+    DarkMode::SetDarkTitleBar(m_hWnd, m_darkMode);
+
+    if (m_darkMode && m_darkBgBrush.IsNull()) {
+        m_darkBgBrush.CreateSolidBrush(DarkMode::kBgColor);
+    }
+
+    for (HWND hChild = ::GetWindow(m_hWnd, GW_CHILD); hChild;
+         hChild = ::GetWindow(hChild, GW_HWNDNEXT)) {
+        DarkMode::SetControlTheme(hChild, m_darkMode);
+    }
+
+    DarkMode::SetControlTheme(m_taskListSort.GetHeader(), m_darkMode);
+    DarkMode::SetControlTheme(m_taskListSort.GetToolTips(), m_darkMode);
+
+    m_taskListSort.SetBkColor(m_darkMode ? DarkMode::kBgColor
+                                         : ::GetSysColor(COLOR_WINDOW));
+    m_taskListSort.SetTextBkColor(m_darkMode ? DarkMode::kBgColor
+                                             : ::GetSysColor(COLOR_WINDOW));
+    m_taskListSort.SetTextColor(m_darkMode ? DarkMode::kTextColor
+                                           : ::GetSysColor(COLOR_WINDOWTEXT));
+
+    InvalidateRect(nullptr, TRUE);
 }
 
 void CTaskManagerDlg::PlaceWindowAtTrayArea() {

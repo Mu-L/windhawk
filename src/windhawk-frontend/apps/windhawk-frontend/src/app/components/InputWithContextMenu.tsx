@@ -16,7 +16,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import { useTranslation } from 'react-i18next';
 import { testIdProps } from '@app/utils';
 
-/// #if EXTENSION && !TAURI
+/// #if VSCODE
 function useItems() {
   const { t } = useTranslation();
 
@@ -161,13 +161,12 @@ const TextAreaWithContextMenuExtension = forwardRef<TextAreaRef, TextAreaProps>(
 TextAreaWithContextMenuExtension.displayName = 'TextAreaWithContextMenu';
 /// #endif
 
-declare const WEBPACK_IS_WEBSITE: boolean;
-declare const WEBPACK_IS_TAURI: boolean;
+declare const WEBPACK_IS_VSCODE: boolean;
 
 // The custom context menu relies on document.execCommand and the VSCode webview
 // host. The website has no such host, and the Tauri shell provides its own native
 // edit context menu, so both fall back to the plain antd inputs.
-const useNativeContextMenu = WEBPACK_IS_WEBSITE || WEBPACK_IS_TAURI;
+const useNativeContextMenu = !WEBPACK_IS_VSCODE;
 
 const InputWithContextMenu = useNativeContextMenu
   ? Input

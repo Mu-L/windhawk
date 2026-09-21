@@ -66,10 +66,10 @@ const Cell = styled.div.attrs({ role: 'cell' })`
 `;
 
 // Contributes no box of its own, so its cells are the grid's children and land in
-// the shared columns. It still carries the row's identity for the tests, and the
-// role earns it a place in the accessibility tree, which a box-less element is
-// otherwise left out of. Without rows to gather them, the cells would sit under
-// no heading.
+// the shared columns. It still carries the row's identity in its data attributes,
+// and the role earns it a place in the accessibility tree, which a box-less
+// element is otherwise left out of. Without rows to gather them, the cells would
+// sit under no heading.
 const Row = styled.div.attrs({ role: 'row' })`
   display: contents;
 `;

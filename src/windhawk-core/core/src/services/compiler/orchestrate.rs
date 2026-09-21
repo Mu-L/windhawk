@@ -467,8 +467,8 @@ mod tests {
         assert_eq!(t, vec![CompilationTarget::X86_64]);
 
         // arm64 machine: x86-64 -> x64 + aarch64, in REQUEST order (the shared
-        // taxonomy emits x64 before aarch64; compile-target order is not
-        // parity-pinned - the compile parity check sorts).
+        // taxonomy emits x64 before aarch64; compile-target order is not a
+        // contract, the per-target argv is).
         let t = compilation_targets(CompileArch::Arm64, &["x86-64".into()], &[]).unwrap();
         assert_eq!(
             t,

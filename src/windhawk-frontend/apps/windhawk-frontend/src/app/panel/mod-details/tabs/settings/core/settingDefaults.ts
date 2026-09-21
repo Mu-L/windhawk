@@ -73,7 +73,8 @@ export function flattenAllDefaults(initialSettings: InitialSettings): ModSetting
 
 /**
  * Whether the draft differs from the declared default anywhere under
- * `keyPrefix`.
+ * `keyPrefix`. `float` is the item's `$float` flag, under which the two sides
+ * compare as numbers.
  *
  * The comparison is of the two sides canonicalized, i.e. of the values a mod
  * reads rather than of the keys a store holds - which is what keeps a stored '0'
@@ -86,11 +87,12 @@ export function flattenAllDefaults(initialSettings: InitialSettings): ModSetting
 export function isSettingModified(
   draft: ModSettings,
   value: InitialSettingsValue,
-  keyPrefix: string
+  keyPrefix: string,
+  float = false
 ): boolean {
   return !settingsEqual(
-    canonicalSubtree(draft, value, keyPrefix),
-    canonicalSubtree(flattenSettingDefaults(value, keyPrefix), value, keyPrefix)
+    canonicalSubtree(draft, value, keyPrefix, float),
+    canonicalSubtree(flattenSettingDefaults(value, keyPrefix), value, keyPrefix, float)
   );
 }
 

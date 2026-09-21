@@ -310,12 +310,14 @@ pub fn extract_metadata(mod_source: &str, language: &str) -> Result<ModMetadata,
 
     let mut result = ModMetadata::default();
 
-    for (key_raw, values) in metadata_raw {
-        // The TS implementation classifies on the key with one leading
-        // underscore stripped, so `@_id` is treated as `@id`.
-        let key = key_raw.strip_prefix('_').unwrap_or(&key_raw);
+    for (key, values) in metadata_raw {
+        // Any `_`-prefixed key is ignored for forward compatibility, even one
+        // whose remainder is a known key: `@_id` is not `@id`.
+        if key.starts_with('_') {
+            continue;
+        }
 
-        match classify(key) {
+        match classify(&key) {
             Some(Classified::SingleLocalizable(single_key)) => {
                 let mut languages: HashSet<&Option<String>> = HashSet::new();
                 for item in &values {
@@ -338,12 +340,12 @@ pub fn extract_metadata(mod_source: &str, language: &str) -> Result<ModMetadata,
                 set_single(&mut result, single_key, value);
             }
             Some(Classified::Multi(multi_key)) => {
-                reject_localized(key, &values)?;
+                reject_localized(&key, &values)?;
                 let value = values.into_iter().map(|v| v.value).collect();
                 set_multi(&mut result, multi_key, value);
             }
             Some(Classified::Single(single_key)) => {
-                reject_localized(key, &values)?;
+                reject_localized(&key, &values)?;
                 if values.len() > 1 {
                     return Err(MetadataError::new(format!(
                         "Duplicate metadata parameter: {key}"
@@ -357,13 +359,9 @@ pub fn extract_metadata(mod_source: &str, language: &str) -> Result<ModMetadata,
                 set_single(&mut result, single_key, value);
             }
             None => {
-                if key_raw.starts_with('_') {
-                    // Ignore for forward compatibility.
-                } else {
-                    return Err(MetadataError::new(format!(
-                        "Unsupported metadata parameter: {key}"
-                    )));
-                }
+                return Err(MetadataError::new(format!(
+                    "Unsupported metadata parameter: {key}"
+                )));
             }
         }
     }
@@ -485,12 +483,16 @@ mod tests {
     }
 
     #[test]
-    fn underscored_known_key_is_classified_as_the_known_key() {
-        // `@_id` strips to `id` before classification, like the TS code.
+    fn underscored_known_key_is_ignored_not_aliased() {
         let src = "// ==WindhawkMod==\n// @_id my-id\n// ==/WindhawkMod==\n";
         assert_eq!(
+            extract_metadata(src, "en").unwrap_err().to_string(),
+            "Mod id must be specified in the source code"
+        );
+        let src = "// ==WindhawkMod==\n// @id a\n// @_id b\n// ==/WindhawkMod==\n";
+        assert_eq!(
             extract_metadata(src, "en").unwrap().id.as_deref(),
-            Some("my-id")
+            Some("a")
         );
     }
 

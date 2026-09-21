@@ -67,14 +67,15 @@ pub(crate) fn mods_folder_url(session: &SessionInner) -> String {
 
 /// The catalog HTTP cache: the URL last served, the `ETag` it came with, and
 /// the bytes, so the next fetch of that URL revalidates instead of downloading
-/// the whole catalog again. Session-scoped state owned by this service, the
-/// shape core-internals.md section 2.2 sanctions for a cache.
+/// the whole catalog again. Session-scoped state owned by this service: the one
+/// cache the session's no-durable-data rule (`crate::session`) admits, kept
+/// inside the owning service behind an invalidation story.
 ///
 /// The invalidation story is the repository's, not ours: an entry is handed
 /// back only on a `304`, which is the server stating that these exact bytes are
 /// what a `200` would carry right now. So the cache cannot serve a catalog the
 /// repository has moved past, and it holds no durable state - the catalog is a
-/// remote document, not one of the persistent stores that section governs.
+/// remote document, not one of the persistent stores that rule governs.
 ///
 /// One slot rather than a map: a session fetches one language, and the language
 /// fallback settles on whichever URL actually served the catalog, so the slot

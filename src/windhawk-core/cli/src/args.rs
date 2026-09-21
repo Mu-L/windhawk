@@ -395,6 +395,13 @@ pub enum ModSettingsCommand {
         #[arg(value_name = "key=value", required = true)]
         pairs: Vec<String>,
     },
+    /// Print the options a mod has written at runtime for its `$dynamicSelect`
+    /// settings, keyed by setting path, in the order the mod wrote them.
+    Options {
+        /// Mod ID.
+        #[arg(value_name = "id")]
+        id: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -404,6 +411,9 @@ pub enum AppCommand {
         #[command(subcommand)]
         command: AppSettingsCommand,
     },
+    /// Record the next keyboard shortcut pressed and print it in the form a
+    /// mod's hotkey setting stores (e.g. ctrl+alt+84).
+    CaptureHotkey,
 }
 
 #[derive(Subcommand, Debug)]

@@ -1,9 +1,9 @@
 // The selection model shared by the Export and Import dialogs. The webview IPC
 // contract's UserDataSelection is a scope keyword plus per-mod facet overrides; this
-// module maps the dialogs' per-row checkbox state onto that shape (pure, so it is
-// unit-tested on its own). Export and import speak the identical selection; they
-// differ only in where the rows come from (installed mods vs the archive manifest)
-// and which facets a row can offer.
+// module maps the dialogs' per-row checkbox state onto that shape (pure: no React
+// or DOM). Export and import speak the identical selection; they differ only in
+// where the rows come from (installed mods vs the archive manifest) and which
+// facets a row can offer.
 
 import { getDisplayModId, isLocalModId } from '@app/utils';
 import type {

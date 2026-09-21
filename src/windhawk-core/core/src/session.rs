@@ -7,7 +7,8 @@ use std::sync::{Arc, RwLock};
 use serde_json::Value;
 use windhawk_core_domain::{CompileArch, ModId};
 use windhawk_core_ports::{
-    Clock, Files, Http, InstallerLanguage, NamedLock, Processes, StorageProvider,
+    Clock, Files, Fonts, HotkeyCapture, Http, InstallerLanguage, NamedLock, Processes,
+    StorageProvider,
 };
 use windhawk_core_protocol::{RequestEnvelope, response_err, response_ok};
 
@@ -19,7 +20,7 @@ use crate::gate::ShutdownGate;
 use crate::locks::ResourceLocks;
 use crate::pending::PendingArtifacts;
 use crate::runtime::{OperationRegistry, PreparedOp};
-use crate::services::{CatalogCache, ProfileState, Storage};
+use crate::services::{CatalogCache, HotkeyCaptureSlot, ProfileState, Storage};
 
 /// The port bundle wired in by the composition root (the FFI crate in
 /// production, in-memory fakes in tests). One field per external port the
@@ -38,6 +39,10 @@ pub struct Deps {
     pub named_lock: Arc<dyn NamedLock>,
     /// Streaming HTTP for the repository client and update download.
     pub http: Arc<dyn Http>,
+    /// The installed font families (`listFontFamilies`).
+    pub fonts: Arc<dyn Fonts>,
+    /// The one-chord keyboard capture (`captureHotkey`).
+    pub hotkey_capture: Arc<dyn HotkeyCapture>,
 }
 
 pub struct SessionInner {
@@ -57,11 +62,14 @@ pub struct SessionInner {
     /// The repository client's catalog validator cache: the last catalog
     /// fetched plus its `ETag`, so a repeat fetch revalidates instead of
     /// re-downloading. Holds no durable data - the repository confirms every
-    /// hit (section 2.2).
+    /// hit.
     catalog_cache: Arc<CatalogCache>,
     /// DLLs written by in-flight compile/install operations, excluded from
     /// concurrent old-DLL cleanup.
     pending: Arc<PendingArtifacts>,
+    /// The token of the hotkey capture in flight, so the next `captureHotkey`
+    /// ends it first; holds no durable data.
+    hotkey_capture: Arc<HotkeyCaptureSlot>,
     ops: OperationRegistry,
     dispatcher: Arc<CallbackDispatcher>,
     gate: ShutdownGate,
@@ -110,6 +118,12 @@ impl SessionInner {
     /// not-yet-committed DLLs here so concurrent cleanup skips them.
     pub fn pending(&self) -> Arc<PendingArtifacts> {
         self.pending.clone()
+    }
+
+    /// The session's one hotkey capture at a time, cloned into the
+    /// `captureHotkey` body so it holds no session reference.
+    pub fn hotkey_capture_slot(&self) -> Arc<HotkeyCaptureSlot> {
+        self.hotkey_capture.clone()
     }
 
     /// The keyed command `Mod` lock for `mod_id`, handed to a staged async
@@ -184,6 +198,7 @@ impl Session {
                 profile_state: ProfileState::new(),
                 catalog_cache: Arc::new(CatalogCache::default()),
                 pending: Arc::new(PendingArtifacts::new()),
+                hotkey_capture: Arc::new(HotkeyCaptureSlot::default()),
                 ops: OperationRegistry::new(),
                 dispatcher,
                 gate: ShutdownGate::new(),

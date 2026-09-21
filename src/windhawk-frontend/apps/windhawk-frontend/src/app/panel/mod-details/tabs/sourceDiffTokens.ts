@@ -10,8 +10,7 @@
  * again on every expand: a few hundred ms of blocked main thread on a mod of a
  * few thousand lines, seconds on the largest ones. Cutting by appending instead
  * makes it linear, which measures as roughly 5x faster at 1000 lines and 10x at
- * 8000. `sourceDiffTokens.spec.ts` pins the output to the library's, token for
- * token.
+ * 8000. The output is the library's, token for token.
  */
 
 import Prism from 'prismjs';

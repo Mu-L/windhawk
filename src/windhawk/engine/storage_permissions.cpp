@@ -56,13 +56,6 @@ void EnsureStoragePermissions() noexcept try {
         }
     };
 
-    auto clearFileLabel = [](const std::filesystem::path& path) {
-        DWORD error = Functions::EnsureFileHasNoMandatoryLabel(path.c_str());
-        if (error != ERROR_SUCCESS) {
-            LOG(L"Failed to clear the label of %s: %u", path.c_str(), error);
-        }
-    };
-
     // The writable folders get "Modify" (read, write, delete), not full
     // control: the grantees include low-integrity and sandboxed processes,
     // which must not be able to rewrite the DACL (WRITE_DAC) or take ownership
@@ -91,13 +84,6 @@ void EnsureStoragePermissions() noexcept try {
     ensureFile(storageManager.GetModsWritablePath(), kFileModifyAccess);
     ensureFile(storageManager.GetSymbolsPath(), kFileModifyAccess);
 
-    // An install that ran a version labeling these two folders and the
-    // ModsWritable key Untrusted still carries the label, and the passes here
-    // only ever add, so clear it. Clearing it on a root reaches everything
-    // already underneath, which is where a mod's stored files sit.
-    clearFileLabel(storageManager.GetModsWritablePath());
-    clearFileLabel(storageManager.GetSymbolsPath());
-
     // Portable installs keep settings in INI files, so there are no registry
     // permissions to ensure.
     auto registryKey = storageManager.GetSettingsRegistryKey();
@@ -118,18 +104,7 @@ void EnsureStoragePermissions() noexcept try {
         }
     };
 
-    auto clearRegistryLabel = [&](const std::wstring& subKey) {
-        DWORD error = Functions::EnsureRegistryKeyHasNoMandatoryLabel(
-            registryKey->first, subKey.c_str());
-        if (error != ERROR_SUCCESS) {
-            LOG(L"Failed to clear the label of %s: %u", subKey.c_str(), error);
-        }
-    };
-
     ensureRegistry(registryKey->second, GENERIC_READ);
-
-    const std::wstring modsWritableKey =
-        registryKey->second + L"\\ModsWritable";
     // Read, write, and delete, but not full control: this key is writable by
     // low-integrity and sandboxed processes, which must not be able to create
     // registry symbolic-link keys (KEY_CREATE_LINK), rewrite the DACL
@@ -137,8 +112,8 @@ void EnsureStoragePermissions() noexcept try {
     // trust boundary. DELETE only lets a grantee remove subkeys in this
     // by-design world-writable area, whose contents they can already overwrite,
     // so it adds no meaningful privilege while matching the file grant.
-    ensureRegistry(modsWritableKey, KEY_READ | KEY_WRITE | DELETE);
-    clearRegistryLabel(modsWritableKey);
+    ensureRegistry(registryKey->second + L"\\ModsWritable",
+                   KEY_READ | KEY_WRITE | DELETE);
 } catch (const std::exception& e) {
     LOG(L"EnsureStoragePermissions failed: %S", e.what());
 } catch (...) {

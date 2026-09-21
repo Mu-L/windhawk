@@ -10,7 +10,7 @@ import type {
   RepositoryDetails,
 } from '@app/webviewIPCMessages';
 import { ModDetailsView, type ModSourceData } from './ModDetails.View';
-import { findCommentBlock } from './modSourceBlocks';
+import { findCommentBlock, stripSettingsMarkers } from './modSourceBlocks';
 
 type RepositoryModDetails = {
   metadata?: ModMetadata;
@@ -83,7 +83,7 @@ function extractInitialSettings(
   }
 
   try {
-    const settings = yaml.load(settingsBlock);
+    const settings = yaml.load(stripSettingsMarkers(settingsBlock));
 
     if (!Array.isArray(settings)) {
       return null;

@@ -17,6 +17,7 @@ import {
 	AsyncOperation,
 	Catalog,
 	CatalogForProfileSync,
+	CaptureHotkeyResult,
 	CompileInstalledModInput,
 	CompileInstalledModResult,
 	CompilerError,
@@ -31,11 +32,15 @@ import {
 	ImportUserDataProgress,
 	ImportUserDataResult,
 	GetInstalledModDetailsParams,
+	HotkeyCaptureEvents,
+	HotkeyCaptureModifiers,
 	InstallModResult,
 	InstalledModListEntry,
 	ListInstalledModsParams,
 	ListInstalledModsResult,
+	ModReviewVote,
 	ModConfig,
+	ModDynamicSelectOptions,
 	ModSettings,
 	ModVersionInfo,
 	ParsedModSource,
@@ -87,13 +92,18 @@ export type BridgeModule = {
 
 // One event of an async operation: a stream of command-specific progress
 // (startUpdate's { progress } download percentage, the compile ops' per-target
-// { compileTarget }) plus the update flow's one-shot installing transition,
-// terminated by exactly one completed or failed. The bridge delivers these as
-// eventJson on the JS thread, in order, via the session's onEvent callback.
+// { compileTarget }, captureHotkey's { modifiers }) plus the update flow's
+// one-shot installing transition, terminated by exactly one completed or
+// failed. The bridge delivers these as eventJson on the JS thread, in order,
+// via the session's onEvent callback.
 type OperationEvent =
 	| {
 			type: 'progress';
-			payload: { progress: number } | { compileTarget: string } | ImportUserDataProgress;
+			payload:
+				| { progress: number }
+				| { compileTarget: string }
+				| { modifiers: HotkeyCaptureModifiers }
+				| ImportUserDataProgress;
 	  }
 	| { type: 'installing' }
 	| { type: 'completed'; result: unknown }
@@ -386,6 +396,46 @@ export function createDllBackend(options: DllBackendOptions, bridgeOverride?: Br
 		};
 	}
 
+	// captureHotkey returns an AsyncOperation synchronously, like startUpdate:
+	// the { modifiers } progress events drive the caller's HotkeyCaptureEvents,
+	// result resolves on completed with the chord or the cancel reason, and
+	// rejects on failed or a synchronous start failure (an older DLL's
+	// INVALID_REQUEST included, so the caller sees the refusal as a rejection
+	// either way).
+	function startCaptureHotkey(events: HotkeyCaptureEvents): AsyncOperation<CaptureHotkeyResult> {
+		let opId = -1;
+		const result = new Promise<CaptureHotkeyResult>((resolve, reject) => {
+			const handler = (event: OperationEvent) => {
+				switch (event.type) {
+					case 'progress':
+						if ('modifiers' in event.payload) {
+							events.onModifiers(event.payload.modifiers);
+						}
+						break;
+					case 'installing':
+						break;
+					case 'completed':
+						opHandlers.delete(opId);
+						resolve(event.result as CaptureHotkeyResult);
+						break;
+					case 'failed':
+						opHandlers.delete(opId);
+						reject(toCoreDllError(event.error));
+						break;
+				}
+			};
+			try {
+				opId = startAsync('captureHotkey', {}, handler);
+			} catch (e) {
+				reject(parseStartError(e));
+			}
+		});
+		return {
+			result,
+			cancel: () => (opId >= 0 ? session.cancel(opId) : false),
+		};
+	}
+
 	// The compile-bearing async operations (compileInstalledMod and installMod)
 	// return an AsyncOperation synchronously. They emit a per-target `progress`
 	// event ({ compileTarget }) as each architecture compiles - this backend
@@ -484,10 +534,27 @@ export function createDllBackend(options: DllBackendOptions, bridgeOverride?: Br
 			getModSettings: (modId: string) => invoke<ModSettings>('getModSettings', { modId }),
 			setModSettings: (modId: string, settings: ModSettings) =>
 				invoke<void>('setModSettings', { modId, settings }),
+			getModDynamicSelectOptions: (modId: string) =>
+				invoke<ModDynamicSelectOptions>('getModDynamicSelectOptions', { modId }),
 			setModLoggingEnabled: (modId: string, enable: boolean) =>
 				invoke<void>('setModLoggingEnabled', { modId, enable }),
 			setModRating: (modId: string, rating: number) =>
 				invoke<void>('setModRating', { modId, rating }),
+
+			// --- Review votes ---
+			voteModReview: (modId: string, reviewId: number) =>
+				invoke<{ votes: ModReviewVote[] }>('voteModReview', { modId, reviewId }).then(
+					r => r.votes,
+				),
+			retractModReviewVote: (modId: string, reviewId: number) =>
+				invoke<{ votes: ModReviewVote[] }>('retractModReviewVote', {
+					modId,
+					reviewId,
+				}).then(r => r.votes),
+			getModReviewVotes: (modId: string) =>
+				invoke<{ votes: ModReviewVote[] }>('getModReviewVotes', { modId }).then(
+					r => r.votes,
+				),
 
 			// --- Use-case operations (sync subset) ---
 			setModEnabled: (modId: string, enable: boolean) =>
@@ -534,6 +601,13 @@ export function createDllBackend(options: DllBackendOptions, bridgeOverride?: Br
 
 			// --- Editor support ---
 			getCompileFlags: () => invoke<string[]>('getCompileFlags', {}),
+
+			// --- Host queries ---
+			listFontFamilies: () =>
+				invoke<{ families: string[] }>('listFontFamilies', {}).then(r => r.families),
+
+			// --- Host captures (async) ---
+			captureHotkey: (events: HotkeyCaptureEvents) => startCaptureHotkey(events),
 
 			// --- User-data export/import ---
 			exportUserData: (input: ExportUserDataInput) =>

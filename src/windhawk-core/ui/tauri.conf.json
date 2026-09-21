@@ -1,5 +1,5 @@
 {
-  "$schema": "https://schema.tauri.app/config/2",
+  "$schema": "https://schema.tauri.app/config/3",
   "productName": "Windhawk",
   "identifier": "net.windhawk.ui",
   "build": {
@@ -9,7 +9,7 @@
     "withGlobalTauri": true,
     "windows": [],
     "security": {
-      "csp": "default-src 'none'; img-src 'self' https://i.imgur.com https://raw.githubusercontent.com https://mods.windhawk.net; connect-src 'self' ipc: http://ipc.localhost https://mods.windhawk.net https://ramensoftware.com; style-src 'unsafe-inline' 'self'; script-src 'self'; worker-src 'self' blob:; font-src 'self'"
+      "csp": "default-src 'none'; img-src 'self' https://i.imgur.com https://raw.githubusercontent.com https://mods.windhawk.net; connect-src 'self' ipc: http://ipc.localhost https://mods.windhawk.net https://update.windhawk.net https://ramensoftware.com; style-src 'unsafe-inline' 'self'; script-src 'self'; worker-src 'self' blob:; font-src 'self'"
     }
   },
   "bundle": {

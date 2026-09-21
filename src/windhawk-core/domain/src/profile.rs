@@ -1,7 +1,9 @@
 //! The user-profile document model and reconciliation rules, a faithful port of
-//! `services/userProfile.ts`, with one documented extension:
+//! `services/userProfile.ts`, with two documented extensions:
 //! [`Profile::set_mod_updates_disabled_for_version`] mirrors a mod-config field
-//! the TS profile never carried.
+//! the TS profile never carried, and [`Profile::add_mod_review_vote`] and
+//! [`Profile::retract_mod_review_vote`] keep the review upvotes
+//! (`reviewVotes`) the update server counts from the posted profile.
 //!
 //! The profile is a `serde_json::Value` parsed and serialized with the
 //! `preserve_order` feature, so a read-modify-write reproduces
@@ -18,6 +20,41 @@
 use std::collections::HashSet;
 
 use serde_json::{Map, Value};
+
+/// The per-mod fields that outlive the mod's removal. Both are about the
+/// repository mod rather than the copy on the machine, so a reinstall finds
+/// them, and an entry holding nothing else counts as not installed.
+const PROFILE_KEEP_ON_REMOVE: [&str; 2] = ["rating", "reviewVotes"];
+
+/// One upvote on a review, stored in the profile as the pair
+/// `[timestamp, reviewId]` under a mod's `reviewVotes`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReviewVote {
+    /// When the vote was cast, in unix seconds.
+    pub timestamp: i64,
+    pub review_id: i64,
+}
+
+impl ReviewVote {
+    /// The vote a stored pair spells, or `None` for anything that is not
+    /// `[integer, integer]`.
+    pub fn from_pair(value: &Value) -> Option<Self> {
+        match value.as_array()?.as_slice() {
+            [timestamp, review_id] => Some(Self {
+                timestamp: timestamp.as_i64()?,
+                review_id: review_id.as_i64()?,
+            }),
+            _ => None,
+        }
+    }
+
+    pub fn to_pair(&self) -> Value {
+        Value::Array(vec![
+            Value::Number(self.timestamp.into()),
+            Value::Number(self.review_id.into()),
+        ])
+    }
+}
 
 pub struct Profile {
     /// Always a `Value::Object`.
@@ -149,6 +186,16 @@ impl Profile {
             .as_str()
     }
 
+    /// The review votes recorded for a mod, in file order. A pair that is not
+    /// `[integer, integer]` is skipped rather than failing the read, so a
+    /// hand-edited file loses that pair's meaning and nothing else.
+    pub fn mod_review_votes(&self, mod_id: &str) -> Vec<ReviewVote> {
+        self.mod_field(mod_id, "reviewVotes")
+            .and_then(Value::as_array)
+            .map(|pairs| pairs.iter().filter_map(ReviewVote::from_pair).collect())
+            .unwrap_or_default()
+    }
+
     // --- writes ---
 
     /// `setModVersion`: set the version (in place) and, by default, drop the
@@ -185,32 +232,99 @@ impl Profile {
         });
     }
 
-    /// `deleteMod`: drop the entry, but keep a lone `rating` (so a removed
-    /// mod's user rating survives a reinstall).
-    pub fn delete_mod(&mut self, mod_id: &str) {
-        let rating = self.mod_field(mod_id, "rating").cloned();
-        match rating {
-            Some(rating) => {
-                let mut keep = Map::new();
-                keep.insert("rating".to_owned(), rating);
-                self.set_mod(mod_id, Value::Object(keep));
+    /// Record an upvote on `review_id`, cast at `now_seconds`, by appending
+    /// the pair to the mod's `reviewVotes` (created, like the entry, when
+    /// absent). Returns whether anything was written: a vote is one way, so
+    /// an id already present is left as it is. A `reviewVotes` that is not
+    /// an array holds no votes and is replaced.
+    pub fn add_mod_review_vote(&mut self, mod_id: &str, review_id: i64, now_seconds: i64) -> bool {
+        self.modify_mod(mod_id, |obj| {
+            if !obj.get("reviewVotes").is_some_and(Value::is_array) {
+                obj.insert("reviewVotes".to_owned(), Value::Array(Vec::new()));
             }
-            None => {
-                if let Some(mods) = self.mods_mut() {
-                    mods.shift_remove(mod_id);
+            let Some(votes) = obj.get_mut("reviewVotes").and_then(Value::as_array_mut) else {
+                return false;
+            };
+            if votes
+                .iter()
+                .filter_map(ReviewVote::from_pair)
+                .any(|vote| vote.review_id == review_id)
+            {
+                return false;
+            }
+            votes.push(
+                ReviewVote {
+                    timestamp: now_seconds,
+                    review_id,
                 }
+                .to_pair(),
+            );
+            true
+        })
+    }
+
+    /// Take back the vote on `review_id`: its pair is removed from the mod's
+    /// `reviewVotes`, a `reviewVotes` left empty is dropped from the entry,
+    /// and an entry left `{}` is dropped from `mods`, so the document reads as
+    /// it did before the vote. Returns whether anything was written: an id no
+    /// `[integer, integer]` pair carries changes nothing, so a malformed pair
+    /// stays where it is.
+    pub fn retract_mod_review_vote(&mut self, mod_id: &str, review_id: i64) -> bool {
+        let Some(mods) = self.mods_mut() else {
+            return false;
+        };
+        let Some(entry) = mods.get_mut(mod_id).and_then(Value::as_object_mut) else {
+            return false;
+        };
+        let Some(votes) = entry.get_mut("reviewVotes").and_then(Value::as_array_mut) else {
+            return false;
+        };
+        let count = votes.len();
+        votes.retain(|pair| {
+            ReviewVote::from_pair(pair).is_none_or(|vote| vote.review_id != review_id)
+        });
+        if votes.len() == count {
+            return false;
+        }
+        if votes.is_empty() {
+            entry.shift_remove("reviewVotes");
+            if entry.is_empty() {
+                mods.shift_remove(mod_id);
             }
+        }
+        true
+    }
+
+    /// `deleteMod`: drop the entry, keeping only its [`PROFILE_KEEP_ON_REMOVE`]
+    /// fields, in place and in their existing order; an entry with none of
+    /// them is removed.
+    pub fn delete_mod(&mut self, mod_id: &str) {
+        let Some(mods) = self.mods_mut() else {
+            return;
+        };
+        let kept = mods
+            .get_mut(mod_id)
+            .and_then(Value::as_object_mut)
+            .is_some_and(|entry| {
+                entry.retain(|key, _| PROFILE_KEEP_ON_REMOVE.contains(&key.as_str()));
+                !entry.is_empty()
+            });
+        if !kept {
+            mods.shift_remove(mod_id);
         }
     }
 
-    /// A mod counts as deleted if it is absent or carries only a `rating`
-    /// (`isModDeleted`).
+    /// A mod counts as deleted if it is absent or carries only
+    /// [`PROFILE_KEEP_ON_REMOVE`] fields (`isModDeleted`). An empty entry is
+    /// not deleted, so the reconciliation drops it rather than keeping it.
     fn is_mod_deleted(&self, mod_id: &str) -> bool {
         match self.mods().and_then(|mods| mods.get(mod_id)) {
             None => true,
-            Some(value) => value
-                .as_object()
-                .is_some_and(|m| m.len() == 1 && m.contains_key("rating")),
+            Some(value) => value.as_object().is_some_and(|m| {
+                !m.is_empty()
+                    && m.keys()
+                        .all(|key| PROFILE_KEEP_ON_REMOVE.contains(&key.as_str()))
+            }),
         }
     }
 
@@ -347,6 +461,7 @@ impl Profile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn empty_profile_has_app_and_mods() {
@@ -425,6 +540,271 @@ mod tests {
             "{\n  \"app\": {},\n  \"mods\": {\n    \"keep\": {\n      \"version\": \"1\"\n    },\n    \"m\": {\n      \"rating\": 3\n    }\n  }\n}"
         );
         assert!(p.is_mod_deleted("m"));
+    }
+
+    #[test]
+    fn delete_mod_keeps_the_keep_set_in_place() {
+        // A removed mod keeps its rating AND its votes, in the order the entry
+        // had them, with everything else shifted out.
+        let mut p = Profile::parse(Some(
+            "{\n  \"app\": {},\n  \"mods\": {\n    \"m\": {\n      \"version\": \"1.0\",\n      \"rating\": 3,\n      \"latestVersion\": \"1.1\",\n      \"reviewVotes\": [\n        [\n          1757900000,\n          112\n        ]\n      ]\n    }\n  }\n}",
+        ));
+        p.delete_mod("m");
+        assert_eq!(
+            p.to_pretty(),
+            "{\n  \"app\": {},\n  \"mods\": {\n    \"m\": {\n      \"rating\": 3,\n      \"reviewVotes\": [\n        [\n          1757900000,\n          112\n        ]\n      ]\n    }\n  }\n}"
+        );
+        assert!(p.is_mod_deleted("m"));
+
+        // Votes alone are kept too, and an entry with no keep-set field goes.
+        let mut p = Profile::parse(Some(
+            r#"{"app":{},"mods":{"voted":{"version":"1.0","reviewVotes":[[1757900000,112]]},"plain":{"version":"1.0"}}}"#,
+        ));
+        p.delete_mod("voted");
+        p.delete_mod("plain");
+        assert_eq!(
+            p.mod_review_votes("voted"),
+            vec![ReviewVote {
+                timestamp: 1757900000,
+                review_id: 112
+            }]
+        );
+        assert_eq!(
+            p.mods().unwrap()["voted"],
+            json!({"reviewVotes": [[1757900000, 112]]})
+        );
+        assert!(!p.mods().unwrap().contains_key("plain"));
+    }
+
+    #[test]
+    fn is_mod_deleted_is_every_key_in_the_keep_set() {
+        let p = Profile::parse(Some(
+            r#"{"app":{},"mods":{
+                "rated":{"rating":4},
+                "voted":{"reviewVotes":[[1757900000,112]]},
+                "both":{"rating":4,"reviewVotes":[[1757900000,112]]},
+                "stamped":{"reviewVotes":[[1757900000,112]],"latestVersion":"1.1"},
+                "empty":{}
+            }}"#,
+        ));
+        assert!(p.is_mod_deleted("absent"));
+        assert!(p.is_mod_deleted("rated"));
+        assert!(p.is_mod_deleted("voted"));
+        assert!(p.is_mod_deleted("both"));
+        // Anything beyond the keep-set is an entry the reconciliation reduces.
+        assert!(!p.is_mod_deleted("stamped"));
+        assert!(!p.is_mod_deleted("empty"));
+    }
+
+    #[test]
+    fn cleanup_leaves_a_votes_only_entry_and_keeps_votes_of_a_removed_mod() {
+        let mut p = Profile::parse(Some(
+            r#"{"app":{},"mods":{
+                "keep":{"version":"1"},
+                "voted-only":{"reviewVotes":[[1757900000,112]]},
+                "gone":{"version":"1.0","reviewVotes":[[1758000000,222]]}
+            }}"#,
+        ));
+        let current: HashSet<String> = ["keep".to_owned()].into_iter().collect();
+        assert!(p.cleanup_removed_mods(&current));
+        // The votes-only entry is already deleted-by-definition, so the pass
+        // leaves it exactly as it was.
+        assert_eq!(
+            p.mods().unwrap()["voted-only"],
+            json!({"reviewVotes": [[1757900000, 112]]})
+        );
+        // The removed mod's entry is reduced to its votes, not dropped.
+        assert_eq!(
+            p.mods().unwrap()["gone"],
+            json!({"reviewVotes": [[1758000000, 222]]})
+        );
+
+        // A second pass has nothing left to change.
+        assert!(!p.cleanup_removed_mods(&current));
+    }
+
+    #[test]
+    fn add_mod_review_vote_appends_once_per_id() {
+        let mut p = Profile::parse(Some(
+            r#"{"app":{},"mods":{"m":{"version":"1.0","reviewVotes":[[1757900000,112]]}}}"#,
+        ));
+        assert!(p.add_mod_review_vote("m", 222, 1758000000));
+        assert_eq!(
+            p.mod_review_votes("m"),
+            vec![
+                ReviewVote {
+                    timestamp: 1757900000,
+                    review_id: 112
+                },
+                ReviewVote {
+                    timestamp: 1758000000,
+                    review_id: 222
+                },
+            ]
+        );
+
+        // A repeat writes nothing: the first vote's timestamp stands.
+        let before = p.to_pretty();
+        assert!(!p.add_mod_review_vote("m", 112, 1759000000));
+        assert_eq!(p.to_pretty(), before);
+    }
+
+    #[test]
+    fn review_votes_skip_a_malformed_pair_on_read_and_keep_it_on_write() {
+        let mut p = Profile::parse(Some(
+            r#"{"app":{},"mods":{"m":{"reviewVotes":[[1757900000,112],"junk",[1,2,3],[1758000000,"x"],[1759000000,333]]}}}"#,
+        ));
+        assert_eq!(
+            p.mod_review_votes("m"),
+            vec![
+                ReviewVote {
+                    timestamp: 1757900000,
+                    review_id: 112
+                },
+                ReviewVote {
+                    timestamp: 1759000000,
+                    review_id: 333
+                },
+            ]
+        );
+
+        // The write appends after the malformed pairs and leaves them in place.
+        assert!(p.add_mod_review_vote("m", 444, 1760000000));
+        assert_eq!(
+            p.mods().unwrap()["m"]["reviewVotes"],
+            json!([
+                [1757900000, 112],
+                "junk",
+                [1, 2, 3],
+                [1758000000, "x"],
+                [1759000000, 333],
+                [1760000000, 444]
+            ])
+        );
+
+        // A `reviewVotes` that is not an array holds no votes and is replaced.
+        let mut p = Profile::parse(Some(r#"{"app":{},"mods":{"m":{"reviewVotes":"junk"}}}"#));
+        assert!(p.mod_review_votes("m").is_empty());
+        assert!(p.add_mod_review_vote("m", 1, 1757900000));
+        assert_eq!(
+            p.mods().unwrap()["m"]["reviewVotes"],
+            json!([[1757900000, 1]])
+        );
+    }
+
+    #[test]
+    fn first_vote_serializes_the_pair_pretty_printed() {
+        // The pair takes the JSON.stringify(x, null, 2) layout of the rest of
+        // the profile: each number on its own line. Appended after the entry's
+        // existing fields; a fresh entry holds only the votes.
+        let mut p = Profile::parse(Some(
+            "{\n  \"app\": {},\n  \"mods\": {\n    \"rated\": {\n      \"rating\": 4\n    },\n    \"installed\": {\n      \"latestVersion\": \"1.2\",\n      \"version\": \"1.2\"\n    }\n  }\n}",
+        ));
+        assert!(p.add_mod_review_vote("rated", 112, 1757900000));
+        assert!(p.add_mod_review_vote("installed", 112, 1757900000));
+        assert!(p.add_mod_review_vote("absent", 112, 1757900000));
+        assert_eq!(
+            p.to_pretty(),
+            "{\n  \"app\": {},\n  \"mods\": {\n    \"rated\": {\n      \"rating\": 4,\n      \"reviewVotes\": [\n        [\n          1757900000,\n          112\n        ]\n      ]\n    },\n    \"installed\": {\n      \"latestVersion\": \"1.2\",\n      \"version\": \"1.2\",\n      \"reviewVotes\": [\n        [\n          1757900000,\n          112\n        ]\n      ]\n    },\n    \"absent\": {\n      \"reviewVotes\": [\n        [\n          1757900000,\n          112\n        ]\n      ]\n    }\n  }\n}"
+        );
+    }
+
+    #[test]
+    fn retract_mod_review_vote_restores_the_bytes_before_the_vote() {
+        // A vote then its retraction leaves the document byte for byte as it
+        // was: the emptied field goes from the entry, and the entry the vote
+        // created goes from `mods`.
+        let seeded = "{\n  \"app\": {},\n  \"mods\": {\n    \"rated\": {\n      \"rating\": 4\n    },\n    \"installed\": {\n      \"latestVersion\": \"1.2\",\n      \"version\": \"1.2\"\n    }\n  }\n}";
+        let mut p = Profile::parse(Some(seeded));
+        assert!(p.add_mod_review_vote("rated", 112, 1757900000));
+        assert!(p.add_mod_review_vote("installed", 112, 1757900000));
+        assert!(p.add_mod_review_vote("absent", 112, 1757900000));
+        assert_ne!(p.to_pretty(), seeded);
+
+        assert!(p.retract_mod_review_vote("rated", 112));
+        assert!(p.retract_mod_review_vote("installed", 112));
+        assert!(p.retract_mod_review_vote("absent", 112));
+        assert_eq!(p.to_pretty(), seeded);
+        assert!(!p.mods().unwrap().contains_key("absent"));
+
+        // With another vote recorded, the field stays and keeps its order.
+        assert!(p.add_mod_review_vote("installed", 112, 1757900000));
+        assert!(p.add_mod_review_vote("installed", 222, 1758000000));
+        assert!(p.retract_mod_review_vote("installed", 112));
+        assert_eq!(
+            p.mod_review_votes("installed"),
+            vec![ReviewVote {
+                timestamp: 1758000000,
+                review_id: 222
+            }]
+        );
+        assert_eq!(
+            p.to_pretty(),
+            "{\n  \"app\": {},\n  \"mods\": {\n    \"rated\": {\n      \"rating\": 4\n    },\n    \"installed\": {\n      \"latestVersion\": \"1.2\",\n      \"version\": \"1.2\",\n      \"reviewVotes\": [\n        [\n          1758000000,\n          222\n        ]\n      ]\n    }\n  }\n}"
+        );
+    }
+
+    #[test]
+    fn retract_mod_review_vote_of_an_unrecorded_id_writes_nothing() {
+        // An id not in the list, an entry without the field (or with one that
+        // is not an array), and a mod with no entry: false, and the bytes are
+        // as they were - in particular no entry is created for the absent mod.
+        let seeded = r#"{"app":{},"mods":{"voted":{"version":"1.0","reviewVotes":[[1757900000,112]]},"plain":{"version":"1.0"},"junk":{"reviewVotes":"junk"}}}"#;
+        let mut p = Profile::parse(Some(seeded));
+        let before = p.to_pretty();
+        assert!(!p.retract_mod_review_vote("voted", 222));
+        assert!(!p.retract_mod_review_vote("plain", 112));
+        assert!(!p.retract_mod_review_vote("junk", 112));
+        assert!(!p.retract_mod_review_vote("absent", 112));
+        assert_eq!(p.to_pretty(), before);
+        assert!(!p.mods().unwrap().contains_key("absent"));
+    }
+
+    #[test]
+    fn retract_mod_review_vote_leaves_a_malformed_pair_in_place() {
+        let mut p = Profile::parse(Some(
+            r#"{"app":{},"mods":{"m":{"reviewVotes":[[1757900000,112],"junk",[1,2,3],[1758000000,"x"],[1759000000,333]]}}}"#,
+        ));
+        // A malformed pair is never matched, whatever numbers it holds.
+        assert!(!p.retract_mod_review_vote("m", 2));
+        assert!(!p.retract_mod_review_vote("m", 3));
+
+        assert!(p.retract_mod_review_vote("m", 112));
+        assert!(p.retract_mod_review_vote("m", 333));
+        assert_eq!(p.mod_review_votes("m"), Vec::new());
+        // The field is not empty, so it and the entry stay.
+        assert_eq!(
+            p.mods().unwrap()["m"]["reviewVotes"],
+            json!(["junk", [1, 2, 3], [1758000000, "x"]])
+        );
+    }
+
+    #[test]
+    fn retraction_leaves_the_keep_set_rules_as_they_are() {
+        // What a retraction leaves behind is read by the existing rules: a
+        // rating-only entry is deleted, a versioned one is installed, and the
+        // entry the vote alone created is gone.
+        let mut p = Profile::parse(Some(
+            r#"{"app":{},"mods":{
+                "rated":{"rating":4,"reviewVotes":[[1757900000,112]]},
+                "installed":{"version":"1.0","reviewVotes":[[1757900000,112]]},
+                "voted":{"reviewVotes":[[1757900000,112]]}
+            }}"#,
+        ));
+        for mod_id in ["rated", "installed", "voted"] {
+            assert!(p.retract_mod_review_vote(mod_id, 112));
+        }
+        assert!(p.is_mod_deleted("rated"));
+        assert!(!p.is_mod_deleted("installed"));
+        assert!(p.is_mod_deleted("voted"));
+        assert!(!p.mods().unwrap().contains_key("voted"));
+
+        // The reconciliation then has only the installed entry to reduce, and
+        // nothing of it to keep.
+        assert!(p.cleanup_removed_mods(&HashSet::new()));
+        assert!(!p.mods().unwrap().contains_key("installed"));
+        assert_eq!(p.mods().unwrap()["rated"], json!({"rating": 4}));
+        assert!(!p.cleanup_removed_mods(&HashSet::new()));
     }
 
     #[test]

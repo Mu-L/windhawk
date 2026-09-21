@@ -51,8 +51,8 @@ pub enum Category {
     RestartRequired,
     /// The operation was cancelled. Exit 9.
     Cancelled,
-    // The five classes below each carry their own `error.code` and their own
-    // exit code (10-14), so every wire `ErrorCode` is exit-distinguishable and
+    // The six classes below each carry their own `error.code` and their own
+    // exit code (10-15), so every wire `ErrorCode` is exit-distinguishable and
     // `Generic` (exit 1) is reserved for a CLI-side failure with no wire error
     // in hand.
     /// An update/install is already in flight; retry later. Exit 10.
@@ -65,13 +65,15 @@ pub enum Category {
     InvalidRequest,
     /// The core reported an internal invariant violation. Exit 14.
     Internal,
+    /// A hotkey capture could not install its keyboard hook. Exit 15.
+    HotkeyCaptureUnavailable,
 }
 
 impl Category {
     /// Map a wire [`ErrorCode`] onto its exit class 1:1. The three wire spellings
     /// that duplicate a CLI class collapse onto the canonical variant
     /// (`AppRootInvalid` -> `EnvInvalid`, `CompilerFailed` -> `CompileFailed`,
-    /// `Canceled` -> `Cancelled`); the other eight map to the like-named variant.
+    /// `Canceled` -> `Cancelled`); the other nine map to the like-named variant.
     /// Exhaustive over `ErrorCode`, so a new wire code is a build error here, not
     /// a silent fall-through to `Generic`.
     fn from_wire(code: ErrorCode) -> Category {
@@ -94,6 +96,7 @@ impl Category {
             ErrorCode::RegistryFailed => Category::RegistryFailed,
             ErrorCode::InvalidRequest => Category::InvalidRequest,
             ErrorCode::Internal => Category::Internal,
+            ErrorCode::HotkeyCaptureUnavailable => Category::HotkeyCaptureUnavailable,
         }
     }
 
@@ -118,6 +121,7 @@ impl Category {
             Category::RegistryFailed => "REGISTRY_FAILED",
             Category::InvalidRequest => "INVALID_REQUEST",
             Category::Internal => "INTERNAL",
+            Category::HotkeyCaptureUnavailable => "HOTKEY_CAPTURE_UNAVAILABLE",
         }
     }
 
@@ -142,6 +146,10 @@ impl Category {
             Category::RegistryFailed => 12,
             Category::InvalidRequest => 13,
             Category::Internal => 14,
+            // A host that cannot record a chord: an environment condition of
+            // its own, since the remedy (another hook ahead of ours, a policy)
+            // is neither the app root's nor a retry's.
+            Category::HotkeyCaptureUnavailable => 15,
         }
     }
 }
@@ -247,6 +255,18 @@ impl CliError {
     pub fn restart_required(message: impl Into<String>) -> CliError {
         CliError::classified(
             Category::RestartRequired,
+            message.into(),
+            SourceLocation::from(Location::caller()),
+        )
+    }
+
+    /// An operation that ended without doing what was asked, on the user's
+    /// account or the environment's: a hotkey capture that lost focus or timed
+    /// out. Exit 9, the class a Ctrl+C lands in.
+    #[track_caller]
+    pub fn cancelled(message: impl Into<String>) -> CliError {
+        CliError::classified(
+            Category::Cancelled,
             message.into(),
             SourceLocation::from(Location::caller()),
         )
@@ -445,7 +465,7 @@ mod tests {
             (ErrorCode::RepoUnreachable, "REPO_UNREACHABLE", 6),
             (ErrorCode::CompilerFailed, "COMPILE_FAILED", 7),
             (ErrorCode::Canceled, "CANCELLED", 9),
-            // Each of the five remaining wire codes has its own exit class, so
+            // Each of the six remaining wire codes has its own exit class, so
             // every wire ErrorCode is exit-distinguishable and exit 1 (GENERIC)
             // is reserved for a CLI-side failure with no wire error.
             (ErrorCode::UpdateInProgress, "UPDATE_IN_PROGRESS", 10),
@@ -453,6 +473,11 @@ mod tests {
             (ErrorCode::RegistryFailed, "REGISTRY_FAILED", 12),
             (ErrorCode::InvalidRequest, "INVALID_REQUEST", 13),
             (ErrorCode::Internal, "INTERNAL", 14),
+            (
+                ErrorCode::HotkeyCaptureUnavailable,
+                "HOTKEY_CAPTURE_UNAVAILABLE",
+                15,
+            ),
         ];
         for (code, expected_code, expected_exit) in cases {
             let err = CliError::from_wire(WireError::new(code, "x"));
@@ -469,6 +494,7 @@ mod tests {
             (CliError::env_invalid("x"), "ENV_INVALID", 3),
             (CliError::mod_not_installed("m"), "MOD_NOT_INSTALLED", 4),
             (CliError::restart_required("x"), "RESTART_REQUIRED", 8),
+            (CliError::cancelled("x"), "CANCELLED", 9),
         ] {
             assert_eq!(err.code(), code);
             assert_eq!(err.exit_code(), exit);

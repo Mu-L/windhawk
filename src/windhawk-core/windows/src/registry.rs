@@ -77,14 +77,14 @@ impl RegistryBackend {
         Self { hive, root_sub_key }
     }
 
-    /// An `HKEY_CURRENT_USER`-rooted backend. The public surface that replaces
-    /// a raw `Hive` at the external test/parity call sites, now that `Hive` is
-    /// sealed.
+    /// An `HKEY_CURRENT_USER`-rooted backend: `Hive` is sealed, so this is how
+    /// a caller outside the crate names the hive.
     pub fn current_user(root_sub_key: String) -> Self {
         Self::new(Hive::CurrentUser, root_sub_key)
     }
 
-    /// An `HKEY_LOCAL_MACHINE`-rooted backend (the manual WOW64 tests' hive).
+    /// An `HKEY_LOCAL_MACHINE`-rooted backend, the hive whose `Software` view
+    /// WOW64 redirects - what a redirection check has to open.
     pub fn local_machine(root_sub_key: String) -> Self {
         Self::new(Hive::LocalMachine, root_sub_key)
     }

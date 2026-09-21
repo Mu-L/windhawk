@@ -6,7 +6,7 @@
 //! implementation it replaces (`src/services/modSource.ts`); the regex
 //! semantics of that file are reproduced here by hand-rolled scanners (the
 //! dependency policy admits no regex crate).
-//! Extraction parity over every published mod version is the exit criterion;
+//! The bar is extraction parity with it over every published mod version;
 //! known message-level divergences (YAML parser diagnostics, settings schema
 //! diagnostics) are documented at their sites.
 
@@ -38,9 +38,10 @@ pub use language::{DEFAULT_LANGUAGE, best_language_match};
 pub use metadata::extract_metadata;
 pub use mod_id::{ModId, Version};
 pub use model::{
-    EngineSettingValue, MetadataError, ModMetadata, SettingItem, SettingValue, SettingsParseError,
+    Condition, EngineSettingValue, MetadataError, ModMetadata, SettingItem, SettingValue,
+    SettingsParseError,
 };
-pub use profile::Profile;
+pub use profile::{Profile, ReviewVote};
 pub use scan::extract_readme;
 pub use settings::{
     FlatSetting, FlatSettingType, extract_initial_settings, extract_initial_settings_for_engine,

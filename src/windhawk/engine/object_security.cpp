@@ -119,33 +119,6 @@ DWORD BuildMergedDacl(PACL currentDacl,
     return ERROR_SUCCESS;
 }
 
-// Returns true if the SACL carries a mandatory label ACE of any kind.
-bool SaclContainsAnyLabel(PACL sacl) {
-    if (!sacl) {
-        return false;
-    }
-
-    ACL_SIZE_INFORMATION sizeInfo;
-    if (!GetAclInformation(sacl, &sizeInfo, sizeof(sizeInfo),
-                           AclSizeInformation)) {
-        return false;
-    }
-
-    for (DWORD i = 0; i < sizeInfo.AceCount; i++) {
-        void* aceEntry = nullptr;
-        if (!GetAce(sacl, i, &aceEntry)) {
-            continue;
-        }
-
-        if (static_cast<ACE_HEADER*>(aceEntry)->AceType ==
-            SYSTEM_MANDATORY_LABEL_ACE_TYPE) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 }  // namespace
 
 BOOL BuildSharedObjectSecurityDescriptor(
@@ -250,71 +223,6 @@ DWORD EnsureRegistryKeyDaclContainsAces(HKEY hKey,
     return SetSecurityInfo(key.get(), SE_REGISTRY_KEY,
                            DACL_SECURITY_INFORMATION, nullptr, nullptr,
                            mergedDacl.get(), nullptr);
-}
-
-DWORD EnsureFileHasNoMandatoryLabel(PCWSTR path) {
-    PACL sacl = nullptr;
-    PSECURITY_DESCRIPTOR securityDescriptor = nullptr;
-    DWORD error = GetNamedSecurityInfo(
-        path, SE_FILE_OBJECT, LABEL_SECURITY_INFORMATION, nullptr, nullptr,
-        nullptr, &sacl, &securityDescriptor);
-    if (error != ERROR_SUCCESS) {
-        return error;
-    }
-    wil::unique_hlocal_security_descriptor securityDescriptorOwner(
-        securityDescriptor);
-
-    if (!SaclContainsAnyLabel(sacl)) {
-        return ERROR_SUCCESS;
-    }
-
-    // An empty SACL is what drops the label; a null one would leave it.
-    alignas(DWORD) BYTE aclBuffer[sizeof(ACL)];
-    PACL emptyAcl = reinterpret_cast<PACL>(aclBuffer);
-    if (!InitializeAcl(emptyAcl, sizeof(aclBuffer), ACL_REVISION)) {
-        return GetLastError();
-    }
-
-    // SetNamedSecurityInfo takes a mutable object name.
-    std::wstring mutablePath(path);
-    return SetNamedSecurityInfo(mutablePath.data(), SE_FILE_OBJECT,
-                                LABEL_SECURITY_INFORMATION, nullptr, nullptr,
-                                nullptr, emptyAcl);
-}
-
-DWORD EnsureRegistryKeyHasNoMandatoryLabel(HKEY hKey, PCWSTR subKey) {
-    // Reading a label needs READ_CONTROL, writing one WRITE_OWNER.
-    wil::unique_hkey key;
-    LSTATUS status = RegOpenKeyEx(
-        hKey, subKey, 0, KEY_WOW64_64KEY | READ_CONTROL | WRITE_OWNER, &key);
-    if (status != ERROR_SUCCESS) {
-        return status;
-    }
-
-    PACL sacl = nullptr;
-    PSECURITY_DESCRIPTOR securityDescriptor = nullptr;
-    DWORD error =
-        GetSecurityInfo(key.get(), SE_REGISTRY_KEY, LABEL_SECURITY_INFORMATION,
-                        nullptr, nullptr, nullptr, &sacl, &securityDescriptor);
-    if (error != ERROR_SUCCESS) {
-        return error;
-    }
-    wil::unique_hlocal_security_descriptor securityDescriptorOwner(
-        securityDescriptor);
-
-    if (!SaclContainsAnyLabel(sacl)) {
-        return ERROR_SUCCESS;
-    }
-
-    alignas(DWORD) BYTE aclBuffer[sizeof(ACL)];
-    PACL emptyAcl = reinterpret_cast<PACL>(aclBuffer);
-    if (!InitializeAcl(emptyAcl, sizeof(aclBuffer), ACL_REVISION)) {
-        return GetLastError();
-    }
-
-    return SetSecurityInfo(key.get(), SE_REGISTRY_KEY,
-                           LABEL_SECURITY_INFORMATION, nullptr, nullptr,
-                           nullptr, emptyAcl);
 }
 
 }  // namespace Functions

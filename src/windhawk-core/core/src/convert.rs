@@ -40,7 +40,30 @@ fn setting_item_to_protocol(item: domain::SettingItem) -> protocol::InitialSetti
                 .map(|(value, label)| std::collections::BTreeMap::from([(value, label)]))
                 .collect()
         }),
+        format: item.format,
+        float: item.float,
+        dynamic_select: item.dynamic_select,
+        min: item.min,
+        max: item.max,
+        show_if: item.show_if.map(conditions_to_protocol),
+        hide_if: item.hide_if.map(conditions_to_protocol),
     }
+}
+
+fn conditions_to_protocol(conditions: Vec<domain::Condition>) -> protocol::SettingConditions {
+    conditions
+        .into_iter()
+        .map(|condition| {
+            (
+                condition.path,
+                condition
+                    .values
+                    .into_iter()
+                    .map(setting_value_to_protocol)
+                    .collect(),
+            )
+        })
+        .collect()
 }
 
 fn setting_value_to_protocol(value: domain::SettingValue) -> protocol::InitialSettingsValue {

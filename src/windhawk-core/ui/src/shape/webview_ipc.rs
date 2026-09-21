@@ -27,7 +27,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use windhawk_core_protocol::{ModConfig, SourceLocation};
+use windhawk_core_protocol::{
+    HotkeyCaptureCanceled, HotkeyModifiers, ModConfig, ReviewVoteDto, SourceLocation,
+};
 
 /// The webview IPC contract version this host implements, stamped into the
 /// `getInitialAppSettings` reply and asserted by the webview on the handshake. Kept in
@@ -35,7 +37,7 @@ use windhawk_core_protocol::{ModConfig, SourceLocation};
 /// (the round-trip test asserts equality); that JSON is the cross-language canonical
 /// value. This is distinct from the core (DLL) contract version in
 /// `windhawk_core_protocol::CONTRACT_VERSION`, a different boundary.
-pub const WEBVIEW_IPC_CONTRACT_VERSION: &str = "1.13.0";
+pub const WEBVIEW_IPC_CONTRACT_VERSION: &str = "1.20.0";
 
 /// Serialize a contract-mirror struct to its wire `Value`. The mirror structs are
 /// plain data - named fields over `String`/`bool`/`i64`/`Value`/`BTreeMap` - so
@@ -297,6 +299,46 @@ pub struct UpdateModRatingReply {
     pub succeeded: bool,
 }
 
+/// `voteModReview` reply: `{ modId, votes, succeeded }`. `votes` is the mod's
+/// whole list after the write, in cast order, as the core answers it - typed
+/// through the protocol's [`ReviewVoteDto`], the same shape both sides of that
+/// boundary hold to; empty on failure. The failure error is attached, not
+/// modelled here (see [`WriteReply`]). `Default` lets the call site build the
+/// echo fields and leave `succeeded` for `finish_write` to stamp.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct VoteModReviewReply {
+    pub mod_id: String,
+    pub votes: Vec<ReviewVoteDto>,
+    pub succeeded: bool,
+}
+
+/// `retractModReviewVote` reply: `{ modId, votes, succeeded }`, the vote reply's
+/// shape - `votes` is the mod's whole list after the write, without the vote
+/// taken back, typed through [`ReviewVoteDto`] like [`VoteModReviewReply`];
+/// empty on failure. The failure error is attached, not modelled here (see
+/// [`WriteReply`]). `Default` lets the call site build the echo fields and leave
+/// `succeeded` for `finish_write` to stamp.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RetractModReviewVoteReply {
+    pub mod_id: String,
+    pub votes: Vec<ReviewVoteDto>,
+    pub succeeded: bool,
+}
+
+/// `getModReviewVotes` reply: `{ modId, votes }`, the votes recorded for the mod
+/// in cast order, empty for a mod the profile has no entry for. Typed through
+/// [`ReviewVoteDto`] like [`VoteModReviewReply`]. An empty list with the failure
+/// error ATTACHED out-of-band (see `commands::mods`), not modelled here, when the
+/// read failed.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GetModReviewVotesReply {
+    pub mod_id: String,
+    pub votes: Vec<ReviewVoteDto>,
+}
+
 // --- Wrapped envelopes ---------------------------------------------------------
 //
 // The structs below type only the host-built ENVELOPE (key names, presence, the
@@ -384,6 +426,70 @@ pub struct GetFeaturedModsReply {
 pub struct GetModSettingsReply {
     pub mod_id: String,
     pub settings: Value,
+}
+
+/// `getModDynamicSelectOptions` reply: `{ modId, options }`. `options` is the core's
+/// map of setting path -> `[{ value, label }, ...]`, forwarded as a `Value` so the
+/// order the mod wrote in (part of the shape) and any field the core adds survive;
+/// an empty map on a core error. The failure error is attached (see
+/// `commands::mods`), not modelled here.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GetModDynamicSelectOptionsReply {
+    pub mod_id: String,
+    pub options: Value,
+}
+
+/// `pickFilePath` reply: `{ path }` for a chosen file or folder, `{ canceled: true }`
+/// for a dismissed dialog (a benign no-op), and neither when the dialog failed - the
+/// failure error is ATTACHED out-of-band (see `commands::mods`), not modelled here.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PickFilePathReply {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canceled: Option<bool>,
+}
+
+/// `listFontFamilies` reply: `{ families }`, the installed font families as a
+/// picker lists them; an empty list when the enumeration failed, with the failure
+/// error ATTACHED out-of-band (see `commands::mods`), not modelled here.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ListFontFamiliesReply {
+    pub families: Vec<String>,
+}
+
+/// `captureHotkey` reply: `{ hotkey }`, the recorded shortcut in the stored form,
+/// or `{ hotkey: null, canceled }` naming why there is none. `hotkey` is always
+/// present on the wire (never skipped), matching `string | null`. A capture that
+/// could not start is the bare `{ hotkey: null }` with the failure error ATTACHED
+/// out-of-band (see `commands::hotkey`), not modelled here. A completion is
+/// forwarded verbatim; the struct builds the failure reply and pins the shape.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureHotkeyReply {
+    pub hotkey: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canceled: Option<HotkeyCaptureCanceled>,
+}
+
+/// `cancelCaptureHotkey` reply: `{ signaled }`, whether a capture was in flight
+/// and told to stop. Never carries an error.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelCaptureHotkeyReply {
+    pub signaled: bool,
+}
+
+/// `hotkeyCaptureProgress` event payload: the modifiers held, forwarded from the
+/// core's progress event verbatim; the struct pins the shape.
+#[allow(dead_code)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct HotkeyCaptureProgressEvent {
+    pub modifiers: HotkeyModifiers,
 }
 
 /// `exportUserData` reply: `{ succeeded, summary?, canceled? }`. `summary` is the
@@ -580,6 +686,17 @@ mod tests {
             "updateModRating" => {
                 round_trip_with_attached_error::<UpdateModRatingReply>(command, file, data)
             }
+            // The vote and its retraction are writes whose replies carry the list;
+            // the read answers the same list. All three attach a failure out-of-band.
+            "voteModReview" => {
+                round_trip_with_attached_error::<VoteModReviewReply>(command, file, data)
+            }
+            "retractModReviewVote" => {
+                round_trip_with_attached_error::<RetractModReviewVoteReply>(command, file, data)
+            }
+            "getModReviewVotes" => {
+                round_trip_with_attached_error::<GetModReviewVotesReply>(command, file, data)
+            }
             "deleteMod" | "setModSettings" | "updateModConfig" => {
                 round_trip_with_attached_error::<WriteReply>(command, file, data)
             }
@@ -616,6 +733,25 @@ mod tests {
             "getModSettings" => {
                 round_trip_with_attached_error::<GetModSettingsReply>(command, file, data)
             }
+            "getModDynamicSelectOptions" => round_trip_with_attached_error::<
+                GetModDynamicSelectOptionsReply,
+            >(command, file, data),
+            "pickFilePath" => {
+                round_trip_with_attached_error::<PickFilePathReply>(command, file, data)
+            }
+            "listFontFamilies" => {
+                round_trip_with_attached_error::<ListFontFamiliesReply>(command, file, data)
+            }
+            // The capture attaches a refused start's error out-of-band; its
+            // cancel never carries one; the progress event forwards the core
+            // payload verbatim.
+            "captureHotkey" => {
+                round_trip_with_attached_error::<CaptureHotkeyReply>(command, file, data)
+            }
+            "cancelCaptureHotkey" => round_trip::<CancelCaptureHotkeyReply>(command, file, data),
+            "hotkeyCaptureProgress" => {
+                round_trip::<HotkeyCaptureProgressEvent>(command, file, data)
+            }
             // User-data export/import: export/inspect attach their failure `error`
             // out-of-band (the split guard); the import terminal likewise (the pump
             // attaches it); `cancelImportUserData` reuses the installer `{ succeeded }`
@@ -650,6 +786,9 @@ mod tests {
         "updateInstalledModsDetails",
         "enableMod",
         "updateModRating",
+        "voteModReview",
+        "retractModReviewVote",
+        "getModReviewVotes",
         "deleteMod",
         "setModSettings",
         "updateModConfig",
@@ -660,6 +799,12 @@ mod tests {
         "getModVersions",
         "getFeaturedMods",
         "getModSettings",
+        "getModDynamicSelectOptions",
+        "pickFilePath",
+        "listFontFamilies",
+        "captureHotkey",
+        "cancelCaptureHotkey",
+        "hotkeyCaptureProgress",
         "exportUserData",
         "inspectUserData",
         "importUserData",

@@ -148,3 +148,45 @@ export function findCommentBlockBody(
   const block = scanCommentBlock(source, name);
   return block && { start: block.bodyStart, end: block.bodyEnd };
 }
+
+/**
+ * The settings block with its `#!` markers stripped, read as windhawk-core's
+ * `marker::strip_markers` (domain/src/settings/marker.rs) reads them: a line
+ * whose content begins with `#! ` loses those three characters, so the
+ * annotation behind the marker is read here as the app reads it, where a
+ * Windhawk before the annotations reads the line as the comment it looks like.
+ * `#!` alone is a marked empty line and stays one. `#!` followed by anything
+ * else is an error naming the line, thrown for the caller to report as the
+ * settings failing to parse, so a typo in the marker is loud rather than a
+ * comment. Characters come off, never lines.
+ *
+ * The app also reads a marked block as that older Windhawk does and compares
+ * the two readings; the page renders and does not validate, so it takes the
+ * one reading.
+ */
+export function stripSettingsMarkers(content: string): string {
+  if (!content.includes('#!')) {
+    return content;
+  }
+  // A CRLF block keeps its carriage returns: `split` leaves each on the line
+  // it ends, and the marker sits after the indentation, before either.
+  return content
+    .split('\n')
+    .map((line, index) => {
+      const marked = /^([ \t]*)#!([\s\S]*)$/.exec(line);
+      if (!marked) {
+        return line;
+      }
+      const [, indent, rest] = marked;
+      if (rest === '' || rest === '\r') {
+        return indent + rest;
+      }
+      if (!rest.startsWith(' ')) {
+        throw new Error(
+          `the '#!' marker on line ${index + 1} must be followed by a space`
+        );
+      }
+      return indent + rest.slice(1);
+    })
+    .join('\n');
+}

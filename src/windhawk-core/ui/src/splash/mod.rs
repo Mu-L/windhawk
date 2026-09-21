@@ -173,13 +173,10 @@ static SPLASH_HOOK: AtomicIsize = AtomicIsize::new(0);
 /// returned yet - so the overlay is attached and painted before the window is ever
 /// shown, rather than a few frames into its life.
 ///
-/// `WM_NCACTIVATE` is handled here rather than through a subclass because tao
-/// answers that message with `DefWindowProcW`, which skips the rest of the
-/// subclass chain: a subclass added this early would never see it. It is what
-/// paints the frame active from the window's first frame: the window takes the
-/// foreground as it is shown, which is before anything else is watching, and the
-/// frame would otherwise keep the inactive colors it was seeded with until `run`
-/// re-themes it half a second later.
+/// `WM_NCACTIVATE` is what paints the frame active from the window's first frame:
+/// the window takes the foreground as it is shown, which is before anything else
+/// is watching, and the frame would otherwise keep the inactive colors it was
+/// seeded with until `run` re-themes it half a second later.
 ///
 /// `WM_WINDOWPOSCHANGED` says a window in the main window's tree has been moved,
 /// sized or shown, which is every occasion the overlay has to answer for: a window
@@ -337,11 +334,11 @@ fn hand_off(app: &AppHandle) {
     shell::set_webview_visible(&window, true);
 
     // The first moment the webview is both built and visible, which is what the
-    // startup's one chance to focus it waits for: the window took the focus as it was
-    // shown, and a webview held invisible cannot be given it. Only for a window the
-    // user is actually in - a launch that did not get the foreground has no focus to
-    // put anywhere, and wry moves it in on the WM_SETFOCUS that arrives when the user
-    // turns to the window.
+    // startup's one chance to focus it waits for: the webview was hidden the moment
+    // it was built, and a webview held invisible cannot be given the focus. Only for
+    // a window the user is actually in - a launch that did not get the foreground has
+    // no focus to put anywhere, and wry moves it in on the WM_SETFOCUS that arrives
+    // when the user turns to the window.
     if shell::is_active(&window) {
         shell::focus_webview(&window);
     }

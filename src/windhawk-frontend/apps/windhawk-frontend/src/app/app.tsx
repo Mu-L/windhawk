@@ -11,7 +11,7 @@ import { setLanguage } from './i18n';
 import Panel from './panel/Panel';
 import { ThemeProvider, type AppTheme } from './theme';
 import { readStoredValue } from './utils';
-/// #if EXTENSION
+/// #if APP
 import 'react-diff-view/style/index.css';
 import Sidebar from './sidebar/Sidebar';
 import { WEBVIEW_IPC_CONTRACT_VERSION } from './webviewIPCMessages';
@@ -108,34 +108,8 @@ function ConfigProviderWithDirection(
   );
 }
 
-/// #if WEBSITE
-function AppWebsite() {
-  // Initialize i18n before the first render so WhenTranslationIsReady's
-  // useTranslation binds to a real i18n instance; react-i18next does not
-  // recover from a first mount with no instance. setLanguage is idempotent, and
-  // website mode has no persisted UI settings, so the context value is a stable
-  // empty object.
-  const [appUISettings] = useState<AppUISettingsContextType>(() => {
-    setLanguage(readStoredValue('windhawk-language') || 'en');
-    return {};
-  });
-
-  return (
-    <WhenTranslationIsReady>
-      <AppUISettingsContext.Provider value={appUISettings}>
-        <ThemeProvider>
-          <ConfigProviderWithDirection>
-            <Panel />
-          </ConfigProviderWithDirection>
-        </ThemeProvider>
-      </AppUISettingsContext.Provider>
-    </WhenTranslationIsReady>
-  );
-}
-/// #endif
-
-/// #if EXTENSION
-const APP_EXTENSION_CONTENT =
+/// #if APP
+const APP_CONTENT =
   document.querySelector('body')?.getAttribute('data-content') ??
   (document.location.hash === '#/debug_sidebar' ? 'sidebar' : 'panel');
 
@@ -173,7 +147,7 @@ function ContractMismatchNotice({ hostVersion }: { hostVersion: string }) {
   );
 }
 
-function AppExtension() {
+function AppHosted() {
   const [appUISettings, setAppUISettings] =
     useState<AppUISettingsContextType | null>(null);
   // The host's contract version from the getInitialAppSettings handshake reply (null
@@ -184,7 +158,7 @@ function AppExtension() {
 
   const { getInitialAppSettings } = useGetInitialAppSettings();
 
-  // Initialize i18n and app settings for extension mode
+  // Initialize i18n and app settings for the app build
   useEffect(() => {
     void (async () => {
       const result = await getInitialAppSettings({});
@@ -252,9 +226,9 @@ function AppExtension() {
           onPersistTheme={WEBPACK_IS_TAURI ? persistTheme : undefined}
         >
           <ConfigProviderWithDirection>
-            {APP_EXTENSION_CONTENT === 'panel' ? (
+            {APP_CONTENT === 'panel' ? (
               <Panel />
-            ) : APP_EXTENSION_CONTENT === 'sidebar' ? (
+            ) : APP_CONTENT === 'sidebar' ? (
               <Sidebar />
             ) : (
               ''
@@ -265,12 +239,36 @@ function AppExtension() {
     </WhenTranslationIsReady>
   );
 }
+/// #else
+function AppWebsite() {
+  // Initialize i18n before the first render so WhenTranslationIsReady's
+  // useTranslation binds to a real i18n instance; react-i18next does not
+  // recover from a first mount with no instance. setLanguage is idempotent, and
+  // website mode has no persisted UI settings, so the context value is a stable
+  // empty object.
+  const [appUISettings] = useState<AppUISettingsContextType>(() => {
+    setLanguage(readStoredValue('windhawk-language') || 'en');
+    return {};
+  });
+
+  return (
+    <WhenTranslationIsReady>
+      <AppUISettingsContext.Provider value={appUISettings}>
+        <ThemeProvider>
+          <ConfigProviderWithDirection>
+            <Panel />
+          </ConfigProviderWithDirection>
+        </ThemeProvider>
+      </AppUISettingsContext.Provider>
+    </WhenTranslationIsReady>
+  );
+}
 /// #endif
 
-declare const WEBPACK_IS_WEBSITE: boolean;
+declare const WEBPACK_IS_APP: boolean;
 
 function App() {
-  return WEBPACK_IS_WEBSITE ? <AppWebsite /> : <AppExtension />;
+  return WEBPACK_IS_APP ? <AppHosted /> : <AppWebsite />;
 }
 
 export default App;

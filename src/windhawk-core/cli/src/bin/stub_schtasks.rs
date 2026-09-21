@@ -1,5 +1,5 @@
-//! A stub `schtasks.exe` for the CLI's registry-mode integration tests,
-//! the analogue of `stub_compiler`. The core toggles a Windows scheduled task
+//! A stub `schtasks.exe` for testing the CLI's registry-mode commands, the
+//! analogue of `stub_compiler`. The core toggles a Windows scheduled task
 //! via `schtasks.exe /change /tn <task> /enable|/disable` when `app settings
 //! set disableRunUIScheduledTask` is applied in registry mode; the
 //! `WINDHAWK_DEBUG_SCHTASKS_PATH` override points the core at this stub so the

@@ -2,7 +2,7 @@ import { fetchCatalogJson } from '@app/utils/swrHelpers';
 import type { ModMetadata, RepositoryDetails } from '@app/webviewIPCMessages';
 import { useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import useSWR from 'swr';
 import { ModsBrowserOnlineView } from './ModsBrowserOnline.View';
 
@@ -22,7 +22,6 @@ interface Props {
 export function ModsBrowserOnlineWebsite({ ContentWrapper }: Props) {
   const { t, i18n } = useTranslation();
   const { modId: displayedModId } = useParams<{ modId: string }>();
-  const navigate = useNavigate();
 
   // Fetch catalog from web with language-specific fallback
   const {
@@ -55,16 +54,13 @@ export function ModsBrowserOnlineWebsite({ ContentWrapper }: Props) {
   );
   const getModDetails = useCallback((mod: WebsiteModDetails) => mod.details, []);
 
-  // Update document title and redirect if mod not found
+  // Update document title
   useEffect(() => {
-    if (!displayedModId || !repositoryMods) {
-      document.title = `${t('website.appHeader.mods')} - Windhawk`;
-    } else if (!repositoryMods[displayedModId]) {
-      navigate('/mods', { replace: true });
-    } else {
-      document.title = (repositoryMods[displayedModId].metadata.name || displayedModId) + ' - Windhawk';
-    }
-  }, [displayedModId, repositoryMods, navigate, t]);
+    const displayedMod = displayedModId && repositoryMods?.[displayedModId];
+    document.title = displayedMod
+      ? (displayedMod.metadata.name || displayedModId) + ' - Windhawk'
+      : `${t('website.appHeader.mods')} - Windhawk`;
+  }, [displayedModId, repositoryMods, t]);
 
   return (
     <ModsBrowserOnlineView

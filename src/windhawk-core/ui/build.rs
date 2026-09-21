@@ -73,7 +73,7 @@ fn embed_test_manifest() {
     // not reach the one target that needs it most: cargo's per-kind link-arg forms name
     // target kinds, and a library's own unit tests are not a kind of their own - they are
     // the lib built with `--test`, which only the general form covers (`-tests` is the
-    // `tests/` binaries alone).
+    // integration-test binaries alone).
     println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
     println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
     // Embed it as written, rather than with the `asInvoker` trustInfo section the linker

@@ -137,8 +137,8 @@ impl fmt::Display for HostError {
 impl std::error::Error for HostError {}
 
 /// A typed-result decode failure (`serde_json::from_value`/`from_str` into a wire
-/// DTO) is a `Decode`, with the wording the CLI used verbatim so the parity
-/// self-diff stays empty. Reached through `?`, so the captured location is this
+/// DTO) is a `Decode`, with the wording the CLI used verbatim so its output
+/// does not change. Reached through `?`, so the captured location is this
 /// conversion (the host decode path), not the `?` site `?` cannot forward.
 impl From<serde_json::Error> for HostError {
     fn from(error: serde_json::Error) -> HostError {

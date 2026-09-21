@@ -14,8 +14,7 @@
  * test see the same diff.
  */
 
-// Enough handlers to land near 4000 lines a side; the sizes this works out to are
-// asserted in the spec, so a change to the block below has to be a deliberate one.
+// Enough handlers to land near 4000 lines a side.
 const HANDLER_COUNT = 152;
 
 export type Revision = 'installed' | 'repository';

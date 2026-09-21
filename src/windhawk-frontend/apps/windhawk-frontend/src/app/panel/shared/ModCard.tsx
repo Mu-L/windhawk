@@ -1,12 +1,14 @@
-import { faUser } from '@fortawesome/free-solid-svg-icons';
+import { faComment, faUser } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { Badge, Button, Card, Checkbox, Divider, Rate, Switch, Tooltip } from 'antd';
 import { useTranslation } from 'react-i18next';
 import styled, { css } from 'styled-components';
 import EllipsisText from '@app/components/EllipsisText';
 import { PopconfirmModal } from '@app/components/InputWithContextMenu';
+import { formatCompactCount } from '@app/utils';
 import { type ModMetadata, type RepositoryDetails } from '@app/webviewIPCMessages';
 import ButtonLink from './ButtonLink';
+import ModReviewsPopover from './reviews/ModReviewsPopover';
 import LocalModIcon from './LocalModIcon';
 import ModMetadataLine from './ModMetadataLine';
 import ModSelectBox, {
@@ -159,6 +161,12 @@ const ModRate = styled(Rate)`
   }
 `;
 
+// One count of the footer, compact; the full number is in what hovering it
+// opens.
+const StatSegment = styled.span`
+  white-space: nowrap;
+`;
+
 const RatingBreakdownTooltip = styled.div`
   display: grid;
   grid-template-columns: auto 1fr auto;
@@ -193,7 +201,7 @@ const BreakdownProgressContainer = styled.div`
 const BreakdownProgressBar = styled.div<{ $percentage: number }>`
   height: 100%;
   width: ${(props) => props.$percentage}%;
-  background-color: #fadb14;
+  background-color: var(--whui-rate-star);
   border-radius: 4px;
   animation: progressBarFill 0.3s ease;
 
@@ -266,8 +274,11 @@ interface Props {
 function ModCard(props: Props) {
   const { t } = useTranslation();
 
-  // Derive stats from repositoryDetails if available
+  // Derive stats from repositoryDetails if available. The reviews count is
+  // absent from a catalog that predates it, and the footer then draws nothing
+  // for it - not a zero, which would say every mod is unreviewed.
   const stats = props.repositoryDetails ? {
+    reviews: props.repositoryDetails.reviews,
     users: props.repositoryDetails.users,
     rating: props.repositoryDetails.rating,
     ratingBreakdown: props.repositoryDetails.ratingBreakdown,
@@ -450,11 +461,33 @@ function ModCard(props: Props) {
             )}
             {stats && (
               <div>
-                <FontAwesomeIcon icon={faUser} />{' '}
-                {t('mod.users', {
-                  count: stats.users,
-                  formattedCount: stats.users.toLocaleString(),
-                })}
+                {stats.reviews !== undefined && (
+                  <>
+                    <ModReviewsPopover
+                      modId={props.modId}
+                      modName={props.title}
+                      reviews={stats.reviews}
+                    >
+                      <StatSegment data-testid="mod-card-reviews">
+                        <FontAwesomeIcon icon={faComment} />{' '}
+                        {formatCompactCount(stats.reviews)}
+                      </StatSegment>
+                    </ModReviewsPopover>
+                    <Divider type="vertical" />
+                  </>
+                )}
+                <Tooltip
+                  title={t('mod.users', {
+                    count: stats.users,
+                    formattedCount: stats.users.toLocaleString(),
+                  })}
+                  placement="bottom"
+                >
+                  <StatSegment data-testid="mod-card-users">
+                    <FontAwesomeIcon icon={faUser} />{' '}
+                    {formatCompactCount(stats.users)}
+                  </StatSegment>
+                </Tooltip>
                 <Divider type="vertical" />
                 <Tooltip title={renderRatingTooltip()} placement="bottom">
                   <span>

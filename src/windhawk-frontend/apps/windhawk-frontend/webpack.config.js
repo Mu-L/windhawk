@@ -98,16 +98,22 @@ const devServerOptions = {
  * @type{import('webpack').WebpackOptionsNormalized}
  */
 module.exports = async () => {
-  // Determine build mode from environment variable.
-  // 'tauri' is the native Windhawk UI (windhawk-core ui crate): it behaves
-  // like 'extension' (same panel, hash routing, ./locales, no Google
-  // Analytics) but swaps the VSCode webview transport for the Tauri bridge.
-  const buildMode = process.env.BUILD_MODE || 'extension';
+  // The build mode, from the BUILD_MODE environment variable. Every build is
+  // either the website (windhawk.net, a plain browser) or the app: the same
+  // panel with hash routing, ./locales and no Google Analytics, hosted by one
+  // of two shells. 'vscode' (the default) is the windhawk-vscode webview;
+  // 'tauri' is the native Windhawk UI (windhawk-core ui crate), which swaps
+  // the VSCode webview transport for the Tauri bridge.
+  //
+  // The four flags are what the code branches on, and hold the invariant a
+  // consumer may assume: WEBSITE and APP are mutually exclusive and cover
+  // every build, and under APP exactly one of TAURI and VSCODE is set (under
+  // WEBSITE neither is).
+  const buildMode = process.env.BUILD_MODE || 'vscode';
   const isWebsite = buildMode === 'website';
+  const isApp = !isWebsite;
   const isTauri = buildMode === 'tauri';
-  // The VSCode webview: the extension build that is neither the website nor the
-  // Tauri native shell.
-  const isVSCode = !isWebsite && !isTauri;
+  const isVSCode = isApp && !isTauri;
   const hasMocks = configuration !== 'production';
 
   const plugins = [
@@ -124,9 +130,9 @@ module.exports = async () => {
     // branches tree-shake away.
     new webpack.DefinePlugin({
       WEBPACK_IS_WEBSITE: JSON.stringify(isWebsite),
+      WEBPACK_IS_APP: JSON.stringify(isApp),
       WEBPACK_IS_TAURI: JSON.stringify(isTauri),
       WEBPACK_IS_VSCODE: JSON.stringify(isVSCode),
-      WEBPACK_BUILD_MODE: JSON.stringify(buildMode),
       WEBPACK_HAS_MOCKS: JSON.stringify(hasMocks),
     }),
 
@@ -154,8 +160,9 @@ module.exports = async () => {
         }
 
         // Add ifdef-loader for conditional compilation.
-        // This allows using /// #if WEBSITE / /// #endif directives. It is
-        // appended last so it runs before the compiler loader on raw source.
+        // This allows using /// #if WEBSITE / /// #endif directives, on the
+        // same flags as the DefinePlugin constants above. It is appended last
+        // so it runs before the compiler loader on raw source.
         rules.push({
           test: /\.tsx?$/,
           use: [
@@ -163,8 +170,9 @@ module.exports = async () => {
               loader: 'ifdef-loader',
               options: {
                 WEBSITE: isWebsite,
-                EXTENSION: !isWebsite,
+                APP: isApp,
                 TAURI: isTauri,
+                VSCODE: isVSCode,
                 HAS_MOCKS: hasMocks,
               },
             },
@@ -174,7 +182,7 @@ module.exports = async () => {
     },
   ];
 
-  if (!isWebsite) {
+  if (isApp) {
     // Configure Monaco to only include YAML language support.
     plugins.push(
       new MonacoWebpackPlugin({
@@ -184,9 +192,9 @@ module.exports = async () => {
 
     // Strip the website-only <head> block (the <base href>, the website
     // CSP, and the Google Analytics scripts) delimited by the
-    // <!-- windhawk.net --> markers. The extension and Tauri serve from
-    // the app root and inject their own CSP, so this block applies only
-    // to the windhawk.net website build.
+    // <!-- windhawk.net --> markers. Both app shells serve from the app
+    // root and inject their own CSP, so this block applies only to the
+    // windhawk.net website build.
     plugins.push({
       apply(compiler) {
         const { Compilation, sources } = compiler.webpack;
@@ -234,7 +242,7 @@ module.exports = async () => {
 
   return {
     // Wipe stale files from the output directory before emitting. Without this
-    // the different build modes (extension/website/tauri) leave each other's
+    // the different build modes (vscode/website/tauri) leave each other's
     // chunks behind, since they emit different sets of files into the same
     // dist/apps/windhawk-frontend directory.
     output: { clean: true },

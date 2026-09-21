@@ -10,20 +10,6 @@ targets = [
 
 [advisories]
 yanked = "deny"
-# The rust-unic Unicode family (unic-char-property/-range, unic-common,
-# unic-ucd-ident/-version) is flagged unmaintained (RUSTSEC-2025-0075/0080/0081/
-# 0098/0100). They are pulled ONLY transitively by the Tauri UI (tauri-utils ->
-# urlpattern -> unic-*), are unmaintained advisories (not vulnerabilities), and
-# have no safe upgrade available. Scoped to the x64/ARM64 UI; the i686
-# production core never links them. Ignored here; revisit when Tauri drops
-# urlpattern's unic dependency.
-ignore = [
-    "RUSTSEC-2025-0075",
-    "RUSTSEC-2025-0080",
-    "RUSTSEC-2025-0081",
-    "RUSTSEC-2025-0098",
-    "RUSTSEC-2025-0100",
-]
 
 [licenses]
 # The workspace crates are unpublished (publish = false); the allowlist

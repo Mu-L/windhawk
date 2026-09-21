@@ -293,7 +293,12 @@ function ModsBrowserLocal({ ContentWrapper }: Props) {
   // joins modalIsOpen: that set holds the route back for things that would be
   // lost or left dangerous by a route change, and these are elements of this
   // screen with no request behind them.
-  const [moveModalOpen, setMoveModalOpen] = useState(false);
+  // The move dialog is 'closing' from the moment it is handed an answer until
+  // it is off the screen, which is what tells the selection guard below a dialog
+  // on its way out from one still asking.
+  const [moveModal, setMoveModal] = useState<'closed' | 'open' | 'closing'>(
+    'closed'
+  );
   const [renameGroupId, setRenameGroupId] = useState<string | null>(null);
 
   const searchInputRef = useRef<InputRef>(null);
@@ -617,8 +622,8 @@ function ModsBrowserLocal({ ContentWrapper }: Props) {
   // leaves the list, and leaves the selection with it. Dropped during render,
   // the way the filter snapshot reconciles itself, so the dialog is never drawn
   // over a selection it has already lost.
-  if (moveModalOpen && selectedModIds.length === 0) {
-    setMoveModalOpen(false);
+  if (moveModal === 'open' && selectedModIds.length === 0) {
+    setMoveModal('closed');
   }
 
   const selectionTargets = useMemo(
@@ -874,7 +879,7 @@ function ModsBrowserLocal({ ContentWrapper }: Props) {
   // about holding the route rather than about where a keystroke belongs - and
   // the move dialog is the one place where clearing the selection would throw
   // away exactly what the dialog is about to act on.
-  const groupModalIsOpen = moveModalOpen || renameGroupId !== null;
+  const groupModalIsOpen = moveModal !== 'closed' || renameGroupId !== null;
 
   useKeyboardShortcut(
     selectedIds.size > 0 && !modalIsOpen && !groupModalIsOpen && !displayedModId,
@@ -998,8 +1003,13 @@ function ModsBrowserLocal({ ContentWrapper }: Props) {
 
   const renamedGroup = groups.find((group) => group.id === renameGroupId);
 
+  // The selection is spent by the move that was made out of it: the mods are
+  // where they were being sent, and holding them checked over the result invites
+  // acting on them again by accident.
   const handleMoveToGroup = (destination: ModGroupDestination) => {
     assignToModGroup(selectedModIds, destination);
+    clearSelection();
+    setMoveModal('closing');
   };
 
   return (
@@ -1107,7 +1117,7 @@ function ModsBrowserLocal({ ContentWrapper }: Props) {
               busy={enableModPending || deleteModPending}
               onEnable={() => handleSelectionEnable(true)}
               onDisable={() => handleSelectionEnable(false)}
-              onMoveToGroup={() => setMoveModalOpen(true)}
+              onMoveToGroup={() => setMoveModal('open')}
               onRemove={handleSelectionRemove}
               onSelectAll={selectAll}
               onClear={clearSelection}
@@ -1286,7 +1296,7 @@ function ModsBrowserLocal({ ContentWrapper }: Props) {
                 navigate('/');
               }
             }}
-            extensionProps={{
+            appProps={{
               installedModDetails: installedMods[displayedModId],
               // For a mod off the featured strip the repository is the whole of
               // what there is to show. For one on the machine it is read
@@ -1346,12 +1356,12 @@ function ModsBrowserLocal({ ContentWrapper }: Props) {
       {/* Told about the details pane rather than left to go with it: the
           installed section is hidden behind a mod's details rather than
           unmounted, so a dialog left mounted would sit on top of the pane. */}
-      {moveModalOpen && !displayedModId && (
+      {moveModal !== 'closed' && !displayedModId && (
         <ModGroupMoveModal
           modIds={selectedModIds}
           groups={groups}
           onMove={handleMoveToGroup}
-          onClose={() => setMoveModalOpen(false)}
+          onClose={() => setMoveModal('closed')}
         />
       )}
       {renamedGroup && !displayedModId && (

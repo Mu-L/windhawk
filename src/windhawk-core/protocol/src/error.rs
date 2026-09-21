@@ -71,6 +71,9 @@ pub enum ErrorCode {
     Canceled,
     /// startUpdate while an update is already in flight.
     UpdateInProgress,
+    /// captureHotkey could not install its keyboard hook, so no chord can be
+    /// recorded on this host; the front-ends fall back to a manual editor.
+    HotkeyCaptureUnavailable,
     /// Filesystem failure not covered above.
     IoFailed,
     /// Registry failure.
@@ -171,6 +174,10 @@ mod tests {
             (ErrorCode::RestartRequired, "RESTART_REQUIRED"),
             (ErrorCode::Canceled, "CANCELED"),
             (ErrorCode::UpdateInProgress, "UPDATE_IN_PROGRESS"),
+            (
+                ErrorCode::HotkeyCaptureUnavailable,
+                "HOTKEY_CAPTURE_UNAVAILABLE",
+            ),
             (ErrorCode::IoFailed, "IO_FAILED"),
             (ErrorCode::RegistryFailed, "REGISTRY_FAILED"),
             (ErrorCode::Internal, "INTERNAL"),

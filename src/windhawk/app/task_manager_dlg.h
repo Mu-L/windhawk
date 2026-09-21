@@ -55,6 +55,9 @@ class CTaskManagerDlg : public CDialogImpl<CTaskManagerDlg>,
         MSG_WM_DESTROY(OnDestroy)
         MSG_WM_TIMER(OnTimer)
         MSG_WM_DPICHANGED(OnDpiChanged)
+        MSG_WM_CTLCOLORDLG(OnCtlColorDlg)
+        MSG_WM_CTLCOLORBTN(OnCtlColorBtn)
+        MSG_WM_SETTINGCHANGE(OnSettingChange)
         COMMAND_ID_HANDLER_EX(IDOK, OnOK)
         COMMAND_ID_HANDLER_EX(IDCANCEL, OnCancel)
         NOTIFY_HANDLER_EX(IDC_TASK_LIST, NM_RCLICK, OnListRightClick)
@@ -64,6 +67,9 @@ class CTaskManagerDlg : public CDialogImpl<CTaskManagerDlg>,
     void OnDestroy();
     void OnTimer(UINT_PTR nIDEvent);
     void OnDpiChanged(UINT nDpiX, UINT nDpiY, PRECT pRect);
+    HBRUSH OnCtlColorDlg(CDCHandle dc, CWindow wnd);
+    HBRUSH OnCtlColorBtn(CDCHandle dc, CButton button);
+    void OnSettingChange(UINT uFlags, LPCTSTR lpszSection);
     void OnOK(UINT uNotifyCode, int nID, CWindow wndCtl);
     void OnCancel(UINT uNotifyCode, int nID, CWindow wndCtl);
     LRESULT OnListRightClick(LPNMHDR pnmh);
@@ -73,7 +79,21 @@ class CTaskManagerDlg : public CDialogImpl<CTaskManagerDlg>,
                       UINT nElapse,
                       TIMERPROC lpfnTimer = nullptr);
     BOOL KillTimer(Timer nIDEvent);
+    static LRESULT CALLBACK ListViewSubclassProc(HWND hWnd,
+                                                 UINT uMsg,
+                                                 WPARAM wParam,
+                                                 LPARAM lParam,
+                                                 UINT_PTR uIdSubclass,
+                                                 DWORD_PTR dwRefData);
+    static LRESULT CALLBACK GripSubclassProc(HWND hWnd,
+                                             UINT uMsg,
+                                             WPARAM wParam,
+                                             LPARAM lParam,
+                                             UINT_PTR uIdSubclass,
+                                             DWORD_PTR dwRefData);
+
     void ReloadMainIcon();
+    void ApplyDarkMode();
     void PlaceWindowAtTrayArea();
     void InitTaskList();
     void LoadTaskList();
@@ -93,4 +113,6 @@ class CTaskManagerDlg : public CDialogImpl<CTaskManagerDlg>,
     CSortListViewCtrl m_taskListSort;
     bool m_refreshListOnDataChangePending = false;
     bool m_showDlgPending = false;
+    bool m_darkMode = false;
+    CBrush m_darkBgBrush;
 };

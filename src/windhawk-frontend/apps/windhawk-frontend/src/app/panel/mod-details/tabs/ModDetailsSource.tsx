@@ -7,6 +7,7 @@ import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import styled from 'styled-components';
 import { DropdownModal } from '@app/components/InputWithContextMenu';
+import { copyTextToClipboard } from '@app/utils';
 import { findCommentBlockBody } from '../modSourceBlocks';
 
 const SyntaxHighlighterWrapper = styled.div`
@@ -63,31 +64,6 @@ function collapseSource(source: string) {
     collapseBlock(source, 'WindhawkModReadme'),
     'WindhawkModSettings'
   );
-}
-
-// https://stackoverflow.com/a/30810322
-function fallbackCopyTextToClipboard(text: string) {
-  const textArea = document.createElement('textarea');
-  textArea.value = text;
-
-  // Avoid scrolling to bottom.
-  textArea.style.top = '0';
-  textArea.style.insetInlineStart = '0';
-  textArea.style.position = 'fixed';
-
-  document.body.appendChild(textArea);
-  textArea.focus();
-  textArea.select();
-
-  try {
-    const successful = document.execCommand('copy');
-    const msg = successful ? 'successful' : 'unsuccessful';
-    console.log('Copying text command was ' + msg);
-  } catch (err) {
-    console.error('Oops, unable to copy', err);
-  }
-
-  document.body.removeChild(textArea);
 }
 
 interface Props {
@@ -152,7 +128,7 @@ function ModDetailsSource({ source }: Props) {
                 if (selection && selection.type === 'Range') {
                   document.execCommand('copy');
                 } else {
-                  fallbackCopyTextToClipboard(source);
+                  copyTextToClipboard(source);
                 }
               },
             },

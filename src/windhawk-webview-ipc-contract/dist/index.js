@@ -20,7 +20,7 @@ exports.isValidSuppression = isValidSuppression;
  * message. Kept in lockstep with contract-version.json (a package test asserts
  * equality; the Rust host reads that JSON to check its own constant).
  */
-exports.WEBVIEW_IPC_CONTRACT_VERSION = '1.13.0';
+exports.WEBVIEW_IPC_CONTRACT_VERSION = '1.20.0';
 /**
  * The 'suppress every offer' value of updatesDisabledForVersion, named so a
  * consumer building one does not spell the sentinel itself.
@@ -75,10 +75,10 @@ function suppressesUpdateOffer(stored, latest) {
             return suppression.version === latest;
     }
 }
-// Whether a value is one a WRITER may store: '' (updates on) or a value the
-// parser recognizes. The parser accepts anything and suppresses nothing for
-// what it does not recognize; this is the other half of that split, so a
 /**
+ * Whether a value is one a WRITER may store: '' (updates on) or a value the
+ * parser recognizes. The parser accepts anything and suppresses nothing for
+ * what it does not recognize; this is the other half of that split, so a
  * writer cannot store a value that can never match - a '1.2.3' with the '='
  * forgotten would otherwise be stored, reported as a success, and honored by
  * nothing. The host enforces the same predicate on updateModConfig.

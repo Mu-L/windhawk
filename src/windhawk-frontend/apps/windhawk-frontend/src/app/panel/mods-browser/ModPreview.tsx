@@ -92,7 +92,7 @@ function ModPreview({ ContentWrapper }: Props) {
           The tabs reach the host themselves and go on working. */}
       <ModDetails
         modId={displayedModId}
-        extensionProps={{
+        appProps={{
           installedModDetails: installedMods[displayedModId],
           // The editor reloads this screen while the mod is being written, which
           // is not the reader asking to be taken back to its details: the tab

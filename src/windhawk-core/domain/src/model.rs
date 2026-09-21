@@ -1,6 +1,20 @@
 //! Domain models for mod source parsing. Shapes deliberately mirror the
 //! contract DTOs, but the types are distinct: the protocol crate is
 //! self-contained and conversions live in the application crate.
+//!
+//! Beside `$name`/`$description`/`$options`, a settings item carries seven
+//! annotations that ride on the item rather than on the value: `$format` (an
+//! opaque display hint the front-end interprets), `$float` and
+//! `$dynamicSelect` (booleans), `$min` / `$max` (bounds on a number item,
+//! forwarded as numbers), and `$showIf` / `$hideIf` (the settings the item's
+//! visibility depends on, forwarded with each reference resolved to the named
+//! setting's absolute declaration path). There is no `SettingValue::Float`: a `$float`
+//! number is parsed into its canonical decimal text and held as a `String`
+//! (or `StringArray`) with the item's `float` flag set, so every consumer that
+//! matches over the value kinds - the engine flattener, the flat-key resolver,
+//! the export canonicalizer, the CLI's leaf typing - sees a string setting and
+//! needs no float arm. The engine store has no floating-point type either; a
+//! mod reads the text back with `Wh_GetStringSetting`.
 
 /// A metadata-parse failure (the `extract_metadata` producer), surfaced in
 /// `ParsedModSource.errors.metadata`. The message is PRIVATE - read it via
@@ -69,10 +83,40 @@ pub struct SettingItem {
     /// Display options in declaration order; each entry is the single
     /// `{value: label}` pair of the YAML option object.
     pub options: Option<Vec<(String, String)>>,
+    /// `$format`: an opaque display hint forwarded to the front-end, never
+    /// interpreted here.
+    pub format: Option<String>,
+    /// `$float`: the value is a decimal held as a string.
+    pub float: bool,
+    /// `$dynamicSelect`: the mod supplies options at runtime.
+    pub dynamic_select: bool,
+    /// `$min` / `$max`: bounds on a number item (integer or `$float`), each
+    /// holding its literal in its own kind. The editor and the CLI enforce
+    /// them; a stored value outside them is not rejected on read.
+    pub min: Option<serde_json::Number>,
+    pub max: Option<serde_json::Number>,
+    /// `$showIf` / `$hideIf`: the item is shown when every `show_if` entry
+    /// holds and no `hide_if` entry does. An editor hint only: a hidden setting
+    /// is stored, saved and read like any other.
+    pub show_if: Option<Vec<Condition>>,
+    pub hide_if: Option<Vec<Condition>>,
+}
+
+/// One entry of a `$showIf` / `$hideIf` map: a setting and the values under
+/// which the entry holds (any of them). `path` is the named setting's absolute
+/// declaration path - dotted, with no array subscripts (`group.enabled`,
+/// `rows.action`) - once `settings::conditions` has resolved the relative
+/// reference the mod wrote; `values` are scalar variants only, each of the
+/// named setting's own kind.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Condition {
+    pub path: String,
+    pub values: Vec<SettingValue>,
 }
 
 /// A setting value (dropped the unrepresentable `Null`: validation rejects the
-/// float/out-of-range/null leaves it was meant for, so it was never
+/// null and out-of-range leaves it was meant for, and a float is either
+/// rejected or, under `$float`, held as a `String`, so it was never
 /// constructed).
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingValue {

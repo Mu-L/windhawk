@@ -25,7 +25,9 @@
 @whui-border-strong: #434343;
 @whui-border-faint: rgba(255, 255, 255, 0.2);
 @whui-divider: #454545;
-@whui-chip-bg: #444444;
+// Translucent, so a chip lifts off whichever surface holds it: the panel, the
+// modal, and the lighter popover alike.
+@whui-chip-bg: rgba(255, 255, 255, 0.17);
 // The surface of a control that floats above the form rather than sitting in
 // it. Lighter than both the panel background and the card, so it reads as
 // raised over either, and over anything it covers.
@@ -48,6 +50,39 @@
 @whui-diff-code-delete-edit: #4e2436;
 
 @import './app-shared.less';
+
+// A tooltip and a popover are one hover surface: the tooltip's here, a shade
+// above the card. (The light theme draws both on the popover's.) Painted on the
+// component rather than through @popover-bg, which the dropdown arrows share
+// with their #1f1f1f menus.
+.@{popover-prefix-cls} {
+  &-inner {
+    background-color: @tooltip-bg;
+  }
+
+  &-inner-content,
+  &-message {
+    color: @tooltip-color;
+  }
+
+  &-arrow-content {
+    --antd-arrow-background-color: @tooltip-bg;
+  }
+
+  // A default button draws its border in @btn-default-border, the color of
+  // this surface, and antd's dark hover paints it @primary-5, a blue too dark
+  // to read on it. Draw it as the ghost button (the app's outlined button) is
+  // drawn: a translucent border, the light hover blue.
+  .@{btn-prefix-cls}-default:not(.@{btn-prefix-cls}-dangerous):not([disabled]) {
+    border-color: @btn-default-ghost-border;
+
+    &:hover,
+    &:focus {
+      color: @primary-color-hover;
+      border-color: @primary-color-hover;
+    }
+  }
+}
 
 // antd's dark theme leaves select and dropdown active/selected options
 // low-contrast; restore a readable highlight. The light theme's defaults are

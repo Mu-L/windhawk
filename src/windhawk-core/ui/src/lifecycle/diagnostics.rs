@@ -1,27 +1,25 @@
-//! What the UI can still say about a window failure the window stack does not
-//! report back to it.
+//! What the UI can say about a window failure, in the user's terms.
 //!
-//! Tauri runs the `setup` hook from inside the event loop, so a window built
-//! there is created through the runtime HANDLE rather than the runtime itself:
-//! that path posts the creation to the loop, LOGS a failure through the `log`
-//! facade instead of returning it, and hands back a detached window either way.
-//! What `build` returns after a failure is then a window that was never
-//! registered, whose native window the runtime has already queued for
-//! destruction - and since the loop is only asked to exit for a window the
-//! runtime knows, nothing reports the loss and nothing ends the process. The
-//! window flashes on screen, disappears, and windhawk-ui.exe stays.
+//! A main window that fails to build comes back from `build` as an error whose
+//! text is another crate's `Display` string - for the common case a WebView2
+//! `HRESULT` and the system's text for it. Two collectors turn that into
+//! something to act on:
 //!
-//! Two collectors are what make the reason presentable when the UI catches that
-//! itself:
-//!
-//! - [`install_log_capture`] keeps the last few records the stack emits. The
-//!   swallowed error goes there, and with it the WebView2 `HRESULT` the failure
-//!   came from - which `reported_busy` reads back, since a folder another
-//!   process holds is a code only the lost creation could have received.
+//! - [`install_log_capture`] keeps the last few records the window stack emits.
+//!   Not everything it knows comes back in the error: the teardown after a
+//!   failure logs, the runtime's own webview operations report their failures
+//!   through the log alone, and a window lost later in the session reports
+//!   nothing but its going. The records are what the fatal dialog's expander
+//!   shows beside the error itself.
 //! - [`webview_environment_failure`] asks WebView2 to open the folder and reports
 //!   what it says, so a missing runtime, a folder that cannot be written, or one
 //!   with no space left is named by a code this crate explains in its own words
 //!   rather than by another crate's `Display` string.
+//!
+//! The one code that needs no probe is the held data folder: it comes from the
+//! CONTROLLER creation, which a probe that only creates an environment never
+//! reaches, and `reported_busy` reads it back from the error text (or the
+//! records) instead.
 //!
 //! Every cause named here is a code WebView2 returned. Nothing tests the folder
 //! on its own to reach a verdict WebView2 did not give, and no code is read as a
@@ -142,8 +140,9 @@ fn captured() -> Vec<String> {
 }
 
 /// Whether any of `lines` carries `code`, in the form the window stack writes an
-/// `HRESULT` in: it logs the error's `Debug`, where the code is its own struct
-/// field and `windows-result` writes that as `HRESULT(0x800700AA)`.
+/// `HRESULT` in: the WebView2 error's `Display` is its `Debug`, where the code is
+/// its own struct field and `windows-result` writes that as `HRESULT(0x800700AA)`,
+/// and a logged record carries the same.
 ///
 /// One fixed literal, matched case-insensitively, against a formatting that is
 /// another crate's to change. A stack that ever writes it differently matches
@@ -158,17 +157,17 @@ fn records_carry(lines: &[String], code: i32) -> bool {
         .any(|line| line.to_ascii_uppercase().contains(&needle))
 }
 
-/// Whether the failure the window stack reported was a held data folder.
+/// Whether the failure the window stack reported was a held data folder, by the
+/// one unambiguous code ([`ERROR_BUSY_HRESULT`]) in the text of the `error` the
+/// build returned or in the records around it.
 ///
-/// The captured records are the only place that code exists on this side: the
-/// stack logs its failure rather than returning it (see the module header), so
-/// what arrives here is the line rather than the `HRESULT`. Reading it back is
-/// what puts the one unambiguous code ([`ERROR_BUSY_HRESULT`]) within reach: it
-/// comes from the CONTROLLER creation, and a controller needs the window that has
-/// just been lost, so the probe - which creates an environment - is not where it
-/// normally arrives.
-fn reported_busy() -> bool {
-    records_carry(&captured(), ERROR_BUSY_HRESULT)
+/// Read back from text rather than from a typed error: the code comes from the
+/// CONTROLLER creation, and a controller needs the window that has just been
+/// lost, so the probe - which creates an environment - is not where it normally
+/// arrives.
+fn reported_busy(error: &str) -> bool {
+    records_carry(&[error.to_owned()], ERROR_BUSY_HRESULT)
+        || records_carry(&captured(), ERROR_BUSY_HRESULT)
 }
 
 /// A failure WebView2 reported for a data folder, as its `HRESULT` and the
@@ -340,20 +339,27 @@ fn in_use_message(data_dir: &Path) -> String {
     )
 }
 
-/// What the probe answered, kept for [`diagnostic_lines`] so the code it found
-/// rides with the captured records rather than in what the user reads.
+/// The failure the build returned and what the probe answered, kept for
+/// [`diagnostic_lines`] so the codes ride with the captured records rather than
+/// in what the user reads.
+static REPORTED_LINE: Mutex<Option<String>> = Mutex::new(None);
 static PROBE_LINE: Mutex<Option<String>> = Mutex::new(None);
 
-/// The raw lines behind a fatal message's expander: what the WebView2 probe found
-/// if it has run, then the captured records. `None` when nothing was collected,
-/// which is what leaves the expander off the dialog entirely.
+/// The raw lines behind a fatal message's expander: the failure the build
+/// returned, what the WebView2 probe found if it has run, then the captured
+/// records. `None` when nothing was collected, which is what leaves the expander
+/// off the dialog entirely.
 pub fn diagnostic_lines() -> Option<String> {
+    let reported = REPORTED_LINE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
     let probe = PROBE_LINE
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .clone();
 
-    let mut lines: Vec<String> = probe.into_iter().collect();
+    let mut lines: Vec<String> = reported.into_iter().chain(probe).collect();
     lines.extend(captured());
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
@@ -379,19 +385,23 @@ fn paragraphs(parts: &[Option<String>]) -> String {
 }
 
 /// Why the window could not be built, on WebView2's word alone: the code the
-/// failure itself carried, then what WebView2 answers when it is asked to open
-/// the folder. A cause neither reports is left unexplained rather than inferred
-/// from the state of the folder, which at this moment still holds this launch's
-/// own browser process.
+/// `error` the build returned carried, then what WebView2 answers when it is
+/// asked to open the folder. A cause neither reports is left unexplained rather
+/// than inferred from the state of the folder, which at this moment still holds
+/// this launch's own browser process.
 ///
 /// The reported code first, and not only because it is free: it is the one that
 /// came from the attempt that actually failed, so it names a folder in use
 /// without the probe having to distinguish that holder from ours - and where it
 /// answers, the probe would only start a browser process for nothing.
 ///
-/// A code the probe returns is recorded for [`diagnostic_lines`] on the way past.
-fn diagnose(data_dir: &Path) -> Cause {
-    if reported_busy() {
+/// The error and a code the probe returns are recorded for [`diagnostic_lines`]
+/// on the way past.
+fn diagnose(data_dir: &Path, error: &str) -> Cause {
+    *REPORTED_LINE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(error.to_owned());
+    if reported_busy(error) {
         return Cause::Busy;
     }
     match webview_environment_failure(data_dir) {
@@ -404,11 +414,11 @@ fn diagnose(data_dir: &Path) -> Cause {
     }
 }
 
-/// What to say about a main window that was handed back but never really built,
-/// with `data_dir` the WebView2 data folder it was given. The codes behind it go
-/// to [`diagnostic_lines`].
-pub fn window_creation_detail(data_dir: &Path) -> String {
-    let cause = diagnose(data_dir);
+/// What to say about a main window whose build failed with `error`, with
+/// `data_dir` the WebView2 data folder it was given. The error and the codes
+/// behind it go to [`diagnostic_lines`].
+pub fn window_creation_detail(data_dir: &Path, error: &str) -> String {
+    let cause = diagnose(data_dir, error);
 
     paragraphs(&[
         Some("The main window could not be created.".to_owned()),
@@ -515,14 +525,14 @@ mod tests {
         assert!(!text.contains("windhawk-ui.exe"));
     }
 
-    // The busy code is recognized in the line the window stack logs, since that
-    // is the only form it reaches this side in. The failure this all started with
-    // (E_INVALIDARG, a webview that could not be created for its own reasons) is
-    // the case that must NOT read as a folder in use.
+    // The busy code is recognized in the text of the error the build returns,
+    // since that is the form it reaches this side in. The failure this all started
+    // with (E_INVALIDARG, a webview that could not be created for its own reasons)
+    // is the case that must NOT read as a folder in use.
     #[test]
-    fn the_busy_code_is_read_back_from_the_captured_line() {
-        let busy = r#"ERROR tauri_runtime_wry: failed to create webview: WebView2 error: WindowsError(Error { code: HRESULT(0x800700AA), message: "The requested resource is in use." })"#.to_owned();
-        let invalid_arg = r#"ERROR tauri_runtime_wry: failed to create webview: WebView2 error: WindowsError(Error { code: HRESULT(0x80070057), message: "The parameter is incorrect." })"#.to_owned();
+    fn the_busy_code_is_read_back_from_the_error_text() {
+        let busy = r#"failed to create webview: WebView2 error: WindowsError(Error { code: HRESULT(0x800700AA), message: "The requested resource is in use." })"#.to_owned();
+        let invalid_arg = r#"failed to create webview: WebView2 error: WindowsError(Error { code: HRESULT(0x80070057), message: "The parameter is incorrect." })"#.to_owned();
 
         assert!(records_carry(
             &[invalid_arg.clone(), busy.clone()],

@@ -23,7 +23,8 @@
 //   empty and long before anything overflows it, so the native bar has no window in
 //   which to appear. Whether a thumb is DRAWN is a separate, per-frame decision in
 //   `layout`. Claiming therefore turns on computed style alone, which cannot change
-//   without a class or style mutation - and those the mutation observer sees.
+//   without a class or style mutation - and those the mutation observer sees, so the
+//   same scan lets go of a container whose style has stopped allowing it to scroll.
 // - What the thumb follows is the CONTENT, not the container. A container's own box does
 //   not change when the content inside it grows, so each claimed container's children
 //   are watched instead: that is one mechanism for an image reaching its intrinsic size,
@@ -600,11 +601,28 @@
       tracked.length = 0;
     }
 
+    // The converse of the claim: a container whose overflow no longer lets it scroll
+    // goes back to its native bar. Left tracked, it would keep drawing thumbs for
+    // content its box merely fails to contain - a child with a negative margin makes
+    // scrollWidth exceed clientWidth on an overflow:visible element too. Only the
+    // overflow is re-read: the host class has set scrollbar-width on it, and its
+    // height is not in question.
+    function releaseUnscrollable() {
+      for (var i = tracked.length - 1; i >= 0; i--) {
+        var s = getComputedStyle(tracked[i].el);
+        if (!scrolls(s.overflowY) && !scrolls(s.overflowX)) {
+          tracked[i].dispose();
+          tracked.splice(i, 1);
+        }
+      }
+    }
+
     function scan() {
       if (highContrast()) {
         untrackAll();
         return;
       }
+      releaseUnscrollable();
       // A tree walker rather than a flat query: rejecting an editor skips its entire
       // subtree, which a per-element test would still have to walk.
       var walker = document.createTreeWalker(

@@ -121,13 +121,56 @@ export type InitialSettingItem = {
 	name?: string;
 	description?: string;
 	options?: Record<string, string>[];
+	// $format: a display hint the core forwards as the mod wrote it and never
+	// interprets; the webview draws a control for the formats it knows.
+	format?: string;
+	// $float: value is a decimal held as a string (or a string array). true or
+	// absent, never false, so an older reader sees a plain string setting.
+	float?: true;
+	// $dynamicSelect: the mod supplies dropdown options at runtime (see
+	// getModDynamicSelectOptions). true or absent, like float.
+	dynamicSelect?: true;
+	// $min / $max: bounds on a number item (a number value, or a $float one),
+	// each the literal as the mod wrote it; present only when declared.
+	min?: number;
+	max?: number;
+	// $showIf / $hideIf: the settings the item's visibility depends on, each by
+	// the declaration path the core resolved it to (dotted, no array subscripts)
+	// mapped to the values under which the entry holds. An editor hint the
+	// webview evaluates; present only when declared.
+	showIf?: SettingConditions;
+	hideIf?: SettingConditions;
 };
 
 export type InitialSettings = InitialSettingItem[];
 
+// The entries of one $showIf / $hideIf map.
+export type SettingConditions = Record<string, (boolean | number | string)[]>;
+
 // Per-mod runtime settings, stored as a flat key/value map. Nested/array source
 // declarations are flattened at write time by the core.
 export type ModSettings = Record<string, string | number>;
+
+// One option of a $dynamicSelect setting: what a selection stores and the text
+// the dropdown shows.
+export type DynamicSelectOption = {
+	value: string;
+	label: string;
+};
+
+// The options a mod wrote at runtime for its $dynamicSelect settings, keyed by
+// setting path (the flat key with every [n] removed). Paths and entries are in
+// the order the mod wrote them; the core does not sort.
+export type ModDynamicSelectOptions = Record<string, DynamicSelectOption[]>;
+
+// One upvote the user cast on a review (a review or a reply) of a repository
+// mod: the review's server id and when the vote was cast, in unix seconds.
+// Kept in the user profile as a [timestamp, reviewId] pair, where it is the
+// "voted" mark and the re-vote guard; the app's update check delivers it.
+export type ModReviewVote = {
+	reviewId: number;
+	timestamp: number;
+};
 
 // UI-bootstrap subset surfaced to the webview; derived from AppSettings plus
 // update/user-profile state.
@@ -366,6 +409,31 @@ export type ImportUserDataProgress =
 	| ImportUserDataAppSettingsProgress;
 
 ////////////////////////////////////////////////////////////
+// Hotkey capture (captureHotkey).
+
+// The modifier keys held during a capture, each folded from its left and right
+// variants; what captureHotkey emits as progress on every change of the set.
+export type HotkeyCaptureModifiers = {
+	ctrl: boolean;
+	alt: boolean;
+	shift: boolean;
+	win: boolean;
+};
+
+// Why a capture completed with no chord: canceled through the handle (or
+// superseded by a newer capture), the foreground window changed, or the
+// capture's 15-second deadline passed.
+export type HotkeyCaptureCanceled = 'canceled' | 'focusLost' | 'timeout';
+
+// The completion of captureHotkey: the chord in the form a hotkey setting stores
+// (ctrl+alt+84: the modifiers held, lowercase in that order, then the virtual-key
+// code in decimal), or null with the reason there is none.
+export type CaptureHotkeyResult = {
+	hotkey: string | null;
+	canceled?: HotkeyCaptureCanceled;
+};
+
+////////////////////////////////////////////////////////////
 // Command DTOs.
 
 export type CoreFsPaths = {
@@ -537,6 +605,12 @@ export interface ImportEvents {
 	onProgress: (data: ImportUserDataProgress) => void;
 }
 
+// Events of captureHotkey: the held modifiers, on every change of the set
+// before the chord completes.
+export interface HotkeyCaptureEvents {
+	onModifiers: (modifiers: HotkeyCaptureModifiers) => void;
+}
+
 ////////////////////////////////////////////////////////////
 // The core interface.
 
@@ -591,11 +665,38 @@ export interface WindhawkCore {
 
 	setModSettings(modId: string, settings: ModSettings): Promise<void>;
 
+	// The options a mod wrote at runtime for its $dynamicSelect settings, read
+	// out of its local-storage tree (a different tree from the settings, so a
+	// settings write never clears them). An empty map for a mod that wrote
+	// none; does not read the mod's source, so whether a path names a
+	// $dynamicSelect item is the caller's lookup.
+	getModDynamicSelectOptions(modId: string): Promise<ModDynamicSelectOptions>;
+
 	// Scoped single-field write used by the editor sidebar's logging toggle.
 	setModLoggingEnabled(modId: string, enable: boolean): Promise<void>;
 
 	// User-profile write (rating of 0 clears the entry).
 	setModRating(modId: string, rating: number): Promise<void>;
+
+	// --- Review votes ---
+
+	// Record an upvote on a review of a repository mod as a profile write and
+	// answer the mod's whole list of votes after it, in cast order. A repeat of
+	// an id already recorded writes nothing and answers the same list. The mod
+	// need not be installed. Rejects a reviewId below 1 and a local@ id as
+	// INVALID_REQUEST (the server's ids start at 1; a local mod has no reviews).
+	voteModReview(modId: string, reviewId: number): Promise<ModReviewVote[]>;
+
+	// Take a vote back as a profile write and answer the mod's whole list of
+	// votes after it. An id that is not recorded writes nothing and answers the
+	// list as it is. The core does not check when the vote was cast; how long a
+	// vote stays retractable is the front-end's rule. The same refusals as
+	// voteModReview.
+	retractModReviewVote(modId: string, reviewId: number): Promise<ModReviewVote[]>;
+
+	// The votes recorded for a mod, in cast order; empty for a mod the profile
+	// has no entry for. Rejects a local@ id like voteModReview.
+	getModReviewVotes(modId: string): Promise<ModReviewVote[]>;
 
 	// --- Use-case operations ---
 
@@ -680,6 +781,24 @@ export interface WindhawkCore {
 	// command). Pure: no params, no session I/O.
 	getCompileFlags(): Promise<string[]>;
 
+	// --- Host queries ---
+
+	// The installed font families for a fontFamily setting's completion, as a
+	// font picker lists them: deduplicated, sorted case-insensitively, without
+	// the @-prefixed vertical variants (an additive command). Enumerated
+	// through GDI, so the list matches the native host's.
+	listFontFamilies(): Promise<string[]>;
+
+	// Record the next keyboard chord the user presses, for a hotkey setting's
+	// badge. The core installs a low-level keyboard hook for the capture's
+	// duration, so the chord is seen ahead of Windows and nothing acts on it.
+	// Resolves when the capture ends, with the chord or the reason there is
+	// none; rejects when the capture could not start (HOTKEY_CAPTURE_UNAVAILABLE,
+	// or an older DLL's INVALID_REQUEST). Cancel via the returned handle; the
+	// core runs one capture per session and ends the running one when another
+	// starts.
+	captureHotkey(events: HotkeyCaptureEvents): AsyncOperation<CaptureHotkeyResult>;
+
 	// --- User-data export/import ---
 
 	// Aggregate the selected user data into an archive (the pretty-printed JSON
@@ -744,6 +863,12 @@ export const ALL_COMMANDS: readonly CommandName[] = [
 	'exportUserData',
 	'inspectUserData',
 	'importUserData',
+	'getModDynamicSelectOptions',
+	'listFontFamilies',
+	'captureHotkey',
+	'voteModReview',
+	'retractModReviewVote',
+	'getModReviewVotes',
 ];
 
 // Build a runtime list that is exactly the domain of a closed string union.
@@ -775,6 +900,11 @@ export const CORE_VALUE_DOMAINS = {
 		'installed',
 		'skipped',
 		'failed',
+	] as const),
+	HotkeyCaptureCanceled: valueDomain<HotkeyCaptureCanceled>()([
+		'canceled',
+		'focusLost',
+		'timeout',
 	] as const),
 	ImportProgressStatus: valueDomain<NonNullable<ImportUserDataModProgress['status']>>()([
 		'installing',

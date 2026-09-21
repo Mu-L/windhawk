@@ -13,7 +13,7 @@
 //! computed with the core's formula (`modified().duration_since(UNIX_EPOCH) *
 //! 1000`) so the two compare equal for the core's own writes.
 //!
-//! Mechanism: a 2-second poll, not the `notify` crate the plan names. A poll keeps
+//! Mechanism: a 2-second poll rather than the `notify` crate. A poll keeps
 //! the change self-contained with no new external dependency (notify's transitive
 //! tree and CC0 license would need cargo-deny/allowlist work) at the cost of up to
 //! one poll-interval of latency - immaterial for an update-availability indicator.

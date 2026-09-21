@@ -152,10 +152,11 @@
       <SDLCheck>true</SDLCheck>
       <ControlFlowGuard>Guard</ControlFlowGuard>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
-      <LanguageStandard>stdcpplatest</LanguageStandard>
+      <LanguageStandard>stdcpp23</LanguageStandard>
       <AdditionalOptions>/d1trimfile:"$(SolutionDir)\" %(AdditionalOptions)</AdditionalOptions>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <ObjectFileName>$(IntDir)obj\%(RelativeDir)</ObjectFileName>
+      <LanguageStandard_C>stdclatest</LanguageStandard_C>
     </ClCompile>
     <Link>
       <CETCompat>true</CETCompat>
@@ -176,10 +177,11 @@
       <SDLCheck>true</SDLCheck>
       <ControlFlowGuard>Guard</ControlFlowGuard>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
-      <LanguageStandard>stdcpplatest</LanguageStandard>
+      <LanguageStandard>stdcpp23</LanguageStandard>
       <AdditionalOptions>/d1trimfile:"$(SolutionDir)\" %(AdditionalOptions)</AdditionalOptions>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <ObjectFileName>$(IntDir)obj\%(RelativeDir)</ObjectFileName>
+      <LanguageStandard_C>stdclatest</LanguageStandard_C>
     </ClCompile>
     <Link>
       <CETCompat>true</CETCompat>
@@ -200,10 +202,11 @@
       <SDLCheck>true</SDLCheck>
       <ControlFlowGuard>Guard</ControlFlowGuard>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
-      <LanguageStandard>stdcpplatest</LanguageStandard>
+      <LanguageStandard>stdcpp23</LanguageStandard>
       <AdditionalOptions>/d1trimfile:"$(SolutionDir)\" %(AdditionalOptions)</AdditionalOptions>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <ObjectFileName>$(IntDir)obj\%(RelativeDir)</ObjectFileName>
+      <LanguageStandard_C>stdclatest</LanguageStandard_C>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -225,9 +228,10 @@
       <SDLCheck>true</SDLCheck>
       <ControlFlowGuard>Guard</ControlFlowGuard>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <LanguageStandard>stdcpplatest</LanguageStandard>
+      <LanguageStandard>stdcpp23</LanguageStandard>
       <AdditionalOptions>/d1trimfile:"$(SolutionDir)\" %(AdditionalOptions)</AdditionalOptions>
       <ObjectFileName>$(IntDir)obj\%(RelativeDir)</ObjectFileName>
+      <LanguageStandard_C>stdclatest</LanguageStandard_C>
     </ClCompile>
     <Link>
       <CETCompat>true</CETCompat>
@@ -253,9 +257,10 @@
       <SDLCheck>true</SDLCheck>
       <ControlFlowGuard>Guard</ControlFlowGuard>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <LanguageStandard>stdcpplatest</LanguageStandard>
+      <LanguageStandard>stdcpp23</LanguageStandard>
       <AdditionalOptions>/d1trimfile:"$(SolutionDir)\" %(AdditionalOptions)</AdditionalOptions>
       <ObjectFileName>$(IntDir)obj\%(RelativeDir)</ObjectFileName>
+      <LanguageStandard_C>stdclatest</LanguageStandard_C>
     </ClCompile>
     <Link>
       <CETCompat>true</CETCompat>
@@ -281,9 +286,10 @@
       <SDLCheck>true</SDLCheck>
       <ControlFlowGuard>Guard</ControlFlowGuard>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <LanguageStandard>stdcpplatest</LanguageStandard>
+      <LanguageStandard>stdcpp23</LanguageStandard>
       <AdditionalOptions>/d1trimfile:"$(SolutionDir)\" %(AdditionalOptions)</AdditionalOptions>
       <ObjectFileName>$(IntDir)obj\%(RelativeDir)</ObjectFileName>
+      <LanguageStandard_C>stdclatest</LanguageStandard_C>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>

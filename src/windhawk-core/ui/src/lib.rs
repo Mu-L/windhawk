@@ -28,12 +28,16 @@ pub mod broker;
 // window's ownership, which is what gets them into Win+V (see the module docs).
 mod clipboard;
 mod commands;
+// The `windhawk://` URL scheme: the link a launch carries, parsed out of the
+// argv and handed to the page over the two paths `run` wires (see the module docs).
+mod deeplink;
 // The launch-into-VSCode subsystem: the workspace manager, the VSCodium
 // launcher, and the [`editor::Editor`] the privileged host operations act
 // through. Exposed as public API so the handler orchestration tests build the
 // in-process host operations over a recording launch seam.
 pub mod editor;
 mod file_dialog;
+mod fonts;
 mod ipc;
 mod lifecycle;
 mod logwindow;
@@ -46,7 +50,7 @@ mod theme;
 use std::sync::Arc;
 
 use serde_json::json;
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use windhawk_core_host::{SessionApi, SessionApiExt};
 use windhawk_core_protocol::AppSettings;
 
@@ -55,7 +59,6 @@ use ipc::bridge::{wh_ipc, wh_log_backlog, wh_log_stop_capture};
 use ipc::emit_sink::AppHandleSink;
 use lifecycle::CoreHandles;
 use lifecycle::diagnostics;
-use lifecycle::taskbar_list;
 use lifecycle::window;
 use lifecycle::window_state;
 use logwindow::AppLogController;
@@ -66,7 +69,7 @@ use theme::AppThemeControl;
 // can build a context and call into the bridge. These names are also what `run`
 // uses below.
 pub use commands::app::announce_app_settings;
-pub use file_dialog::{DialogOutcome, FileDialog};
+pub use file_dialog::{DialogOutcome, FileDialog, PickTarget};
 pub use ipc::bridge::{BridgeCtx, handle_envelope};
 pub use ipc::emit_sink::EmitSink;
 pub use ipc::envelope::{Envelope, EnvelopeType};
@@ -127,19 +130,20 @@ const DEFAULT_WEBVIEW_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOO
      --disable-background-networking --disable-component-update";
 
 /// Build and run the Tauri application. The single-instance plugin makes the
-/// first process authoritative: a bare re-launch
-/// ensures-running-and-foreground, forwarded to the primary's callback, which
-/// shows and focuses the window (the tray closes the UI with a window message,
-/// not a re-launch, so there is no quit intent to forward). The core session is
-/// brought up in `setup` so only the primary creates one; a startup failure is
-/// fatal and presented natively. Development is always on for the native build:
-/// VSCodium ships with the install, so the launch entry points route to real
-/// handlers and a missing editor is a launch-time error, not a hidden button.
+/// first process authoritative: a re-launch ensures-running-and-foreground,
+/// forwarded with its argv to the primary's callback, which shows and focuses
+/// the window and then follows a `windhawk://` link the argv may carry
+/// (`deeplink`); a first launch follows its own (the tray closes the UI with a
+/// window message, not a re-launch, so there is no quit intent to forward). The
+/// core session is brought up in `setup` so only the primary creates one; a
+/// startup failure is fatal and presented natively. Development is always on
+/// for the native build: VSCodium ships with the install, so the launch entry
+/// points route to real handlers and a missing editor is a launch-time error,
+/// not a hidden button.
 pub fn run() {
     // Start keeping the records the window stack emits, before anything can emit
-    // one. A window or webview that fails to build is reported through the `log`
-    // facade and then discarded, so this capture is the only place the reason
-    // survives to be shown (lifecycle/diagnostics.rs).
+    // one: what it says about a failure beyond the error it returns is what the
+    // fatal dialog's expander shows (lifecycle/diagnostics.rs).
     diagnostics::install_log_capture();
 
     // When this process was started to replace a stuck instance (the startup-stuck
@@ -197,23 +201,51 @@ pub fn run() {
         window::spawn_startup_watchdog();
     }
 
+    // The `windhawk://` link this launch carries, if any, for the page to open on
+    // (the cold path; a forwarded launch's link arrives in the single-instance
+    // callback below). Over `args_os`: the registered handler makes the command
+    // line something a web page shapes, and `args` panics on one that is not
+    // Unicode.
+    let deep_link = deeplink::from_os_args(std::env::args_os().skip(1));
+
     // Tauri reports a shell that could not be built or run only here, at the end of
     // a chain with nowhere left to hand an error: there is no UI to say it in, so the
     // process ends on it.
     #[allow(clippy::expect_used)]
     tauri::Builder::default()
+        // The webview runtime, selected here rather than by a Cargo feature: wry
+        // over WebView2, which is what every native touchpoint in this crate
+        // (shell.rs, splash/, clipboard.rs) is written against.
+        .runtime(tauri_runtime_wry::Wry::default())
         // Single-instance MUST be the first plugin. On a second launch it
         // forwards the new argv to this (primary) instance and exits the second
-        // process; the callback brings the primary's window to front. A launch
-        // always means ensure-running-and-foreground; the tray closes the UI
-        // with a window message (SC_CLOSE), not a re-launch, so there is no
-        // intent to parse.
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        // process. A launch always means ensure-running-and-foreground, so the
+        // callback brings the window to front first; a `windhawk://` link in
+        // the argv is then handed to the page, so a link at a hidden or
+        // minimized window is a bare launch plus the navigation. The emit
+        // reaches a listening page only: a second instance forwards once the
+        // splash has handed over, and the page subscribes shortly after the
+        // first paint that does so, so a link forwarded in that gap is dropped
+        // and the launch is a bare one. Closing it would take a queue drained
+        // on subscribe, for a link the user can click again with the window
+        // already in front. The tray closes the UI with a window message
+        // (SC_CLOSE), not a re-launch, so there is no quit intent to parse.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             window::show_and_focus_main(app);
+            if let Some(link) = deeplink::from_args(argv.iter().map(String::as_str)) {
+                let _ = app.emit(deeplink::EVENT, &link);
+            }
         }))
         // The external-link shim: the navigation and new-window handlers route
-        // external links through this plugin.
-        .plugin(tauri_plugin_opener::init())
+        // external links through this plugin. Its JS click handler is off: it
+        // would intercept `target="_blank"` clicks and invoke `open_url` from
+        // the webview, past `on_new_window` and the capability (which grants
+        // the plugin to Rust only, keeping `is_external` the single gate).
+        .plugin(
+            tauri_plugin_opener::Builder::default()
+                .open_js_links_on_click(false)
+                .build(),
+        )
         .setup(move |app| {
             // The elevation ladder starts FIRST, before the core is even loaded.
             // Nothing about the decision needs a session - it is one flag in
@@ -302,9 +334,10 @@ pub fn run() {
             let theme_dark = theme_setting.resolved_dark();
 
             // Build the main window in Rust (not tauri.conf.json) so the theme
-            // background color, the theme + scrollbar + splash + banner
-            // initialization scripts, and the external-link navigation handler
-            // attach. The background color is the system theme's so the first frame
+            // background color, the theme + scrollbar + splash + banner (+ deep
+            // link, on a launch that carries one) initialization scripts, and the
+            // external-link navigation handler attach. The background color is the
+            // system theme's so the first frame
             // matches it instead of flashing white before the document paints. The
             // scrollbar script replaces WebView2's Edge Fluent scrollbars with
             // flat themed overlay ones; the banner script says when the window is
@@ -338,12 +371,11 @@ pub fn run() {
 
             // Ask for the window to be put on its remembered rectangle in the pixels
             // the displays are laid out in, as it is created and before it is shown,
-            // for the foreground as it is shown, and - where the launch opens
-            // maximized - for it to be shown only once it is. The builder only takes
-            // logical coordinates, which tao resolves to a display by a search of its
-            // own that can land on a different one where two displays run at different
-            // scales; it shows the window without activating it; and it shows a
-            // maximized window at its restored size first (see
+            // and - where the launch opens maximized - for it to be shown only once
+            // it is. The builder only takes logical coordinates, which tao resolves
+            // to a display by a search of its own that can land on a different one
+            // where two displays run at different scales, and it shows a maximized
+            // window at its restored size first (see
             // window_state::OpeningGeometry::prepare_creation).
             //
             // After the splash, not before: both watch for the window's WM_CREATE
@@ -381,25 +413,6 @@ pub fn run() {
                     // is given below: the window is up while WebView2 is created
                     // (roughly half a second) instead of after, showing the splash.
                     .visible(true)
-                    // Unfocused, which is what keeps wry's `MoveFocus` off the
-                    // webview build. wry makes that call for a focused webview
-                    // as the last step of the build and propagates what it
-                    // answers, and WebView2 fails it with E_INVALIDARG for a
-                    // window that cannot take focus - a window minimized while
-                    // the splash is up is enough, and the build is visible and
-                    // minimizable for the second or so it runs. So a launch
-                    // someone minimized lost the whole webview, and with it the
-                    // window, to a call about focus.
-                    //
-                    // Both halves of the launch's focus are put back where the
-                    // failure of either is not fatal. Tauri applies this flag to
-                    // the window as well, which is what makes tao show the window
-                    // without activating it, so the activation is asked for on the
-                    // show itself (window::prepare_main_window_creation); and the
-                    // focus wry would have moved into the webview is moved there
-                    // when the splash hands the screen over (splash::hand_off),
-                    // the first moment the webview is both built and visible.
-                    .focused(false)
                     .inner_size(
                         opening.inner_size.width as f64,
                         opening.inner_size.height as f64,
@@ -444,6 +457,13 @@ pub fn run() {
                 .on_new_window(move |url, _features| {
                     shell::handle_new_window(&new_window_handle, &url)
                 });
+            // The link this launch carries, published as a global the front-end
+            // reads before it creates its router, so the first page it draws is
+            // the mod's rather than the list followed by a navigation.
+            let builder = match &deep_link {
+                Some(link) => builder.initialization_script(deeplink::init_script(link)),
+                None => builder,
+            };
             // A remembered position that still lands on a display is reused; anything
             // else (a first run, a display that is gone) opens centered.
             let builder = match opening.position {
@@ -457,62 +477,23 @@ pub fn run() {
             let builder = builder
                 .additional_browser_args(&webview_browser_args(extra_browser_args.as_deref()));
 
-            // Built with CLSID_TaskbarList taken over for the duration: tao ends
-            // every window creation with an ITaskbarList::AddTab this window has
-            // no use for, and that call is a SendMessage into Explorer with no
-            // timeout, so a shell that has stopped pumping would park the launch
-            // here with the splash on screen and nothing behind it
-            // (lifecycle/taskbar_list.rs). The guard is dropped before the
-            // outcome is examined - the rest of the process, including the
-            // failure paths below, sees the real class.
-            let built = {
-                let _taskbar_list = taskbar_list::suppress();
-                builder.build()
-            };
-
-            let main_window = match built {
+            let main_window = match builder.build() {
                 Ok(window) => window,
-                Err(error) => {
-                    // Surface a window-build failure natively instead of the opaque
-                    // exit-101 panic Tauri raises when the setup hook returns Err. The
-                    // data folder is one this user owns and was created above, so what
-                    // is left is a WebView2 startup fault of its own (a missing
-                    // runtime, a profile locked by another instance, a folder that will
-                    // not take the profile); present it as-is.
-                    fail_startup(&format!("The main window could not be created.\n\n{error}"));
-                }
+                // Surface a window-build failure natively instead of the opaque
+                // exit-101 panic Tauri raises when the setup hook returns Err. The
+                // data folder is one this user owns and was created above, so what
+                // is left is a WebView2 startup fault of its own (a missing
+                // runtime, a profile locked by another instance, a folder that will
+                // not take the profile), which the diagnostics put into words.
+                Err(error) => fail_startup(&diagnostics::window_creation_detail(
+                    &ui_data_dir,
+                    &error.to_string(),
+                )),
             };
-
-            // A window Tauri hands back is not necessarily a window that exists.
-            // This hook runs from INSIDE the event loop, so the build goes through
-            // the runtime handle rather than the runtime: that path posts the
-            // creation to the loop, logs a failure through the `log` facade instead
-            // of returning it, and answers `Ok` either way. A failed build therefore
-            // arrives here as a window that was never registered, whose native
-            // window is already queued for destruction - and because the loop is
-            // only asked to exit for a window the runtime knows, the destruction
-            // that follows would take the window off the screen and leave this
-            // process running with nothing on it, saying nothing.
-            //
-            // Any round trip to the runtime tells the two apart: a message for an
-            // unregistered window is dropped and its reply channel closes.
-            if main_window.hwnd().is_err() {
-                fail_startup(&diagnostics::window_creation_detail(&ui_data_dir));
-            }
 
             // The window is built, so the hook that watched it being created has
             // nothing left to catch.
             window::finish_main_window_creation();
-
-            // The same AddTab, on the window that now exists: tao answers the
-            // shell's TaskbarCreated broadcast by making that call from the
-            // window procedure with the window-state lock held, and the
-            // SendMessage inside it comes straight back into the procedure and
-            // onto the same lock. Put the stub back for that one message, ahead
-            // of tao in the subclass chain (lifecycle/taskbar_list.rs).
-            if let Ok(hwnd) = main_window.hwnd() {
-                taskbar_list::guard_taskbar_restart(hwnd.0);
-            }
 
             // There is a window, so the ladder may put its consent dialog up. Both
             // halves of that matter: the dialog has an owner to be modal to, and
@@ -974,7 +955,7 @@ mod tests {
     /// The wry release whose defaults the mirrored half of
     /// [`DEFAULT_WEBVIEW_BROWSER_ARGS`] was copied from. Moving it is a claim that
     /// the copy was read against that release, so bump it only with the re-read.
-    const REVIEWED_WRY_VERSION: &str = "0.55.1";
+    const REVIEWED_WRY_VERSION: &str = "0.57.0";
 
     /// The `wry` version the workspace lockfile resolves to, or `None` if the
     /// lockfile has no such package.
@@ -1002,8 +983,8 @@ mod tests {
     // only carry a hand-copy, and a wry upgrade that changes the defaults would
     // leave the copy stale with nothing to say so - the window would keep building
     // with arguments that no longer match what the toolkit ships. Pin the version
-    // the copy was read from, so the upgrade is what fails, at the fast gate,
-    // rather than the window quietly diverging.
+    // the copy was read from, so the upgrade is what fails, here, rather than the
+    // window quietly diverging.
     #[test]
     fn the_mirrored_wry_defaults_are_pinned_to_a_reviewed_version() {
         let resolved = locked_wry_version(include_str!("../../Cargo.lock"))

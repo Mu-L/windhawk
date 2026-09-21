@@ -163,6 +163,7 @@ fn error_code_str(code: ErrorCode) -> &'static str {
         ErrorCode::IoFailed => "IO_FAILED",
         ErrorCode::RegistryFailed => "REGISTRY_FAILED",
         ErrorCode::Internal => "INTERNAL",
+        ErrorCode::HotkeyCaptureUnavailable => "HOTKEY_CAPTURE_UNAVAILABLE",
     }
 }
 

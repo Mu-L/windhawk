@@ -18,7 +18,13 @@ import {
   type InitialSettingsValue,
 } from '@app/webviewIPCMessages';
 import { materializedMaxIndex } from './editorState';
-import { describeSetting, type ModSettings, parseIntLax, SettingType } from './yamlConverter';
+import {
+  describeSetting,
+  type ModSettings,
+  parseFloatText,
+  parseIntLax,
+  SettingType,
+} from './yamlConverter';
 
 // What the walk produces: the canonical map, and the keys the schema accounted
 // for - the rest of the map is carried over untouched.
@@ -58,14 +64,17 @@ export function canonicalSettings(
  * The canonical form of the one setting at `keyPrefix`, on the terms
  * `canonicalSettings` puts a whole map in. A subtree is read against the one
  * value that declares it, so it holds only the keys that value describes.
+ * `float` is the item's `$float` flag, which rides beside the value rather than
+ * in it.
  */
 export function canonicalSubtree(
   settings: ModSettings,
   value: InitialSettingsValue,
-  keyPrefix: string
+  keyPrefix: string,
+  float = false
 ): ModSettings {
   const accumulator: CanonicalAccumulator = { canonical: {}, described: new Set() };
-  canonicalizeSetting(settings, value, keyPrefix, accumulator);
+  canonicalizeSetting(settings, value, keyPrefix, accumulator, float);
   return accumulator.canonical;
 }
 
@@ -76,7 +85,7 @@ function canonicalizeGroup(
   accumulator: CanonicalAccumulator
 ): void {
   for (const item of items) {
-    canonicalizeSetting(settings, item.value, keyPrefix + item.key, accumulator);
+    canonicalizeSetting(settings, item.value, keyPrefix + item.key, accumulator, !!item.float);
   }
 }
 
@@ -84,7 +93,8 @@ function canonicalizeSetting(
   settings: ModSettings,
   value: InitialSettingsValue,
   keyPrefix: string,
-  accumulator: CanonicalAccumulator
+  accumulator: CanonicalAccumulator,
+  float: boolean
 ): void {
   const descriptor = describeSetting(value);
 
@@ -98,7 +108,11 @@ function canonicalizeSetting(
       break;
 
     case SettingType.String:
-      setCanonical(accumulator, keyPrefix, (settings[keyPrefix] ?? '').toString());
+      setCanonical(
+        accumulator,
+        keyPrefix,
+        float ? canonicalFloat(settings[keyPrefix]) : (settings[keyPrefix] ?? '').toString()
+      );
       break;
 
     case SettingType.NestedObject:
@@ -108,7 +122,7 @@ function canonicalizeSetting(
     case SettingType.NumberArray:
     case SettingType.StringArray:
       forEachElement(settings, keyPrefix, (elementKey) =>
-        canonicalizeSetting(settings, descriptor.value[0], elementKey, accumulator)
+        canonicalizeSetting(settings, descriptor.value[0], elementKey, accumulator, float)
       );
       break;
 
@@ -118,6 +132,16 @@ function canonicalizeSetting(
       );
       break;
   }
+}
+
+/**
+ * A `$float` setting as a mod reads it: the number its text spells, so "1",
+ * "1.0" and a stored integer 1 are one value. Text spelling no number stays
+ * text - the empty text of an unset setting, which is the zero a mod parses it
+ * as and the zero the map leaves out, and anything else, equal only to itself.
+ */
+function canonicalFloat(raw: string | number | undefined): string | number {
+  return parseFloatText(raw) ?? (raw ?? '').toString();
 }
 
 /**

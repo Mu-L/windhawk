@@ -2,15 +2,22 @@ import {
   largeModSourceInstalled,
   largeModSourceRepository,
 } from './largeModSource';
+import type {
+  ReviewPostFields,
+  ModReviewsDocument,
+} from '@app/panel/shared/reviews/modReviews';
 import {
   type AppSettings,
   type AppUISettings,
+  type DynamicSelectOption,
   type GetFeaturedModsReplyData,
   type GetInstalledModsReplyData,
   type GetModVersionsReplyData,
   type GetRepositoryModsReplyData,
+  type HotkeyCaptureModifiers,
   type InitialSettings,
   type InstalledModDetails,
+  type ModReviewVote,
   type ModConfig,
   type ModMetadata,
   type SetEditedModDetailsData,
@@ -69,7 +76,29 @@ export interface MockDataRegistry {
   // The installed side of a mod. Keyed by mod like the repository side below, so
   // that one mod can be described differently from the rest.
   installedModSourceData: (modId: string) => InstalledModSourceData;
-  modSettings: Record<string, unknown>;
+  // The store's values for a mod's settings, keyed by mod like the source data
+  // above: the keys follow the block the mod declares.
+  modSettings: (modId: string) => Record<string, string | number>;
+  // What a mod wrote at runtime for its `$dynamicSelect` settings, keyed by
+  // setting path. Served for every mod: a path no mod declares is never asked
+  // for.
+  modDynamicSelectOptions: Record<string, DynamicSelectOption[]>;
+  // The file the host's Open dialog picks, and the folder its folder dialog
+  // picks, whichever setting asked.
+  pickedFilePath: string;
+  pickedFolderPath: string;
+  // The font families installed on the host machine.
+  fontFamilies: string[];
+  // What the host records when a hotkey setting's badge asks for a shortcut:
+  // the modifiers it reports held on the way, one progress event each spread
+  // over the wait, then the shortcut in the stored form - after a wait, as a
+  // person takes one to press a shortcut, so the badge's recording states are
+  // there to be seen.
+  hotkeyCapture: {
+    heldOnTheWay: HotkeyCaptureModifiers[];
+    hotkey: string;
+    delayMs: number;
+  };
   modVersions: ModVersion[];
   // The repository side of a mod: its source at the given version, or at the
   // version the repository currently offers when none is asked for.
@@ -85,6 +114,22 @@ export interface MockDataRegistry {
   userDataManifest: UserDataManifest;
   userDataArchive: string;
   userDataImportSummary: UserDataImportSummary;
+
+  // Mod reviews
+  // A mod's reviews document as the pages site serves it, or null for a mod
+  // with no file, which reads as no reviews.
+  modReviews: (modId: string) => ModReviewsDocument | null;
+  // A post, answered as the update server answers one: with the id it landed
+  // under, pending approval.
+  postModReview: (fields: ReviewPostFields) => Promise<{ id: number }>;
+  // The votes the user cast, keyed by mod, as the host reads them out of the
+  // profile. A vote cast in mock mode is written back here and one taken back
+  // removed, so a reopened modal finds what the host would hold.
+  reviewVotes: Record<string, ModReviewVote[]>;
+  // Whether the reviews document and the post go out over the network rather
+  // than being answered here. Off, mock mode stands in for the server as it
+  // does for the host; on, a journey answers the real requests itself.
+  commentsOverNetwork: boolean;
 
   // Sidebar (editor mode)
   sidebarModDetails: SidebarModDetails;
@@ -141,6 +186,22 @@ const mockModMetadataLargeOnline: ModMetadata = {
   version: '0.2',
 };
 
+// The mod whose settings block is mockAnnotatedInitialSettings, so the browser
+// preview has each annotation's control on one page. Named to sort after the
+// other mods, out of the way of what the journeys assert about their order;
+// not in the repository listing and with nothing waiting for it, the settings
+// tab being what it is about.
+const ANNOTATED_MOD_ID = 'settings-annotations-sample';
+
+const mockModMetadataAnnotated: ModMetadata = {
+  name: 'Settings Annotations Sample',
+  description: 'A mod whose settings use every annotation',
+  version: '1.0',
+  author: 'Mock',
+  github: 'https://github.com/mock',
+  include: ['*'],
+};
+
 const mockModConfig: ModConfig = {
   disabled: false,
   loggingEnabled: false,
@@ -173,6 +234,12 @@ const mockModDetailsUpdatable: ModDetailsType = {
   latestVersion: mockModMetadataOnline.version ?? null,
 };
 
+// The last line links another mod's page on windhawk.net, which the app draws
+// as the mod, and the site itself, which it leaves as written. On that line
+// rather than one of its own: the journeys that reach into the header's menus
+// were written over a details page that fits the viewport, and one that scrolls
+// is one Cypress scrolls before every click, which dismisses the menu (see
+// NO_SCROLL in the e2e support).
 const mockReadme = `# Mock readme...
 
 | Month    | Savings |
@@ -181,7 +248,7 @@ const mockReadme = `# Mock readme...
 | February | $80     |
 | March    | $420    |
 
-More text...`;
+More text, on [My Mod 002](https://windhawk.net/mods/online002) and the [Windhawk website](https://windhawk.net/)...`;
 
 // One setting of each shape the settings editor renders: a plain string, a
 // string whose declared default is too long to show whole, a dropdown, an array,
@@ -253,6 +320,375 @@ const mockInitialSettings: InitialSettings = [
   },
 ];
 
+// The settings block of a mod using the data-type annotations, one setting per
+// shape the docs give them (windhawk.wiki, "Settings annotations added in
+// Windhawk 2.0"); each setting's description names the shape it stands for.
+// The block of the annotated sample mod on the default machine, and of every
+// mod under the annotated-settings scenario (see mockScenarios).
+export const mockAnnotatedInitialSettings: InitialSettings = [
+  {
+    key: 'accentColor',
+    value: '3399FF',
+    name: 'Accent color',
+    description: 'A color without an alpha channel',
+    format: 'colorRgb',
+  },
+  {
+    key: 'overlayColor',
+    value: '80FFFFFF',
+    name: 'Overlay color',
+    description: 'A color with its alpha first',
+    format: 'colorArgb',
+  },
+  {
+    key: 'soundFile',
+    value: '',
+    name: 'Sound file',
+    description: 'A file the host picks',
+    format: 'filePath',
+  },
+  {
+    key: 'opacity',
+    value: '0.85',
+    name: 'Opacity',
+    description: 'A decimal number on a slider between 0 and 1',
+    float: true,
+    min: 0,
+    max: 1,
+    format: 'slider',
+  },
+  {
+    key: 'scale',
+    value: '1',
+    name: 'Scale factor',
+    description: 'A decimal number declared as an integer',
+    float: true,
+  },
+  {
+    key: 'weights',
+    value: ['0.25', '0.5', '1'],
+    name: 'Weights',
+    description: 'An array of decimal numbers',
+    float: true,
+  },
+  {
+    key: 'outputDevice',
+    value: '',
+    name: 'Output device',
+    description: 'A dropdown the mod fills at runtime',
+    dynamicSelect: true,
+  },
+  {
+    key: 'monitor',
+    value: 'primary',
+    name: 'Monitor',
+    description: 'A declared option above a runtime list',
+    options: [{ primary: 'Primary monitor' } as Record<string, string>],
+    dynamicSelect: true,
+  },
+  {
+    key: 'rules',
+    value: [
+      [
+        {
+          key: 'device',
+          value: '',
+          name: 'Device',
+          description: 'A runtime dropdown every row shares',
+          dynamicSelect: true,
+        },
+        { key: 'label', value: '', name: 'Label' },
+      ],
+    ],
+    name: 'Rules',
+    description: 'Rows sharing one runtime dropdown',
+  },
+  {
+    key: 'fontName',
+    value: 'Segoe UI',
+    name: 'Font',
+    description: 'A font family, completed over the installed ones',
+    format: 'fontFamily',
+  },
+  {
+    key: 'logFolder',
+    value: '',
+    name: 'Log folder',
+    description: 'A folder the host picks',
+    format: 'folderPath',
+  },
+  {
+    key: 'toggleHotkey',
+    value: 'ctrl+alt+84',
+    name: 'Toggle hotkey',
+    description: 'A keyboard chord, recorded from the keys pressed',
+    format: 'hotkey',
+  },
+  {
+    key: 'highlightColors',
+    value: ['FF8800', '00AAFF'],
+    name: 'Highlight colors',
+    description: 'A color per element of a string array',
+    format: 'colorRgb',
+  },
+  {
+    key: 'homepageUrl',
+    value: '',
+    name: 'Homepage',
+    description: 'A format the editor does not know, drawn as plain text',
+    format: 'url',
+  },
+  {
+    key: 'rating',
+    value: 3,
+    name: 'Rating',
+    description: 'An integer held between 1 and 5',
+    min: 1,
+    max: 5,
+  },
+  {
+    key: 'zoom',
+    value: '1.5',
+    name: 'Zoom',
+    description: 'A decimal held between 0.5 and 4',
+    float: true,
+    min: 0.5,
+    max: 4,
+  },
+  {
+    key: 'iconSize',
+    value: 24,
+    name: 'Icon size',
+    description: 'An integer on a slider between 16 and 64',
+    min: 16,
+    max: 64,
+    format: 'slider',
+  },
+  {
+    key: 'retries',
+    value: 3,
+    name: 'Retries',
+    description: 'An integer with only a lower bound, which a slider cannot span',
+    min: 0,
+    format: 'slider',
+  },
+  {
+    key: 'columnWidths',
+    value: [120, 80, 200],
+    name: 'Column widths',
+    description: 'Integers each on a slider between 40 and 400',
+    min: 40,
+    max: 400,
+    format: 'slider',
+  },
+  {
+    key: 'watchedDevices',
+    value: [''],
+    name: 'Watched devices',
+    description: 'A runtime dropdown per element of a string array',
+    dynamicSelect: true,
+  },
+  {
+    key: 'fadeEnabled',
+    value: false,
+    name: 'Fade trick',
+    description: 'A switch, gating the settings after it',
+  },
+  {
+    key: 'fadeDelay',
+    value: 100,
+    name: 'Fade delay',
+    description: 'Shown while the fade trick is on',
+    showIf: { fadeEnabled: [true] },
+  },
+  {
+    key: 'centerOffset',
+    value: 0,
+    name: 'Center offset',
+    description: 'Hidden while the fade trick is on',
+    hideIf: { fadeEnabled: [true] },
+  },
+  {
+    key: 'fadeExclusions',
+    value: [''],
+    name: 'Fade exclusions',
+    description: 'An array shown while the fade trick is on',
+    showIf: { fadeEnabled: [true] },
+  },
+  {
+    key: 'notifyMode',
+    value: 'none',
+    name: 'Notification',
+    description: 'A dropdown, gating the setting after it and the badge sound',
+    options: [
+      { none: 'None' } as Record<string, string>,
+      { toast: 'Toast' } as Record<string, string>,
+      { custom: 'Custom text' } as Record<string, string>,
+    ],
+  },
+  {
+    key: 'notifyText',
+    value: '',
+    name: 'Notification text',
+    description: 'Shown for the custom notification',
+    showIf: { notifyMode: ['custom'] },
+  },
+  {
+    key: 'actions',
+    value: [
+      [
+        {
+          key: 'action',
+          value: 'nothing',
+          name: 'Action',
+          options: [
+            { nothing: 'Nothing' } as Record<string, string>,
+            { keypress: 'Key press' } as Record<string, string>,
+            { start: 'Start a program' } as Record<string, string>,
+          ],
+        },
+        {
+          key: 'args',
+          value: '',
+          name: 'Arguments',
+          description: 'Shown for a key press or a program, per row',
+          showIf: { 'actions.action': ['keypress', 'start'] },
+        },
+      ],
+    ],
+    name: 'Actions',
+    description: 'Rows each gating a field on their own action',
+  },
+  {
+    key: 'showBadge',
+    value: false,
+    name: 'Badge',
+    description: 'A switch gating the two settings after it, each beside another gate',
+  },
+  {
+    key: 'badgeFadeDelay',
+    value: 200,
+    name: 'Badge fade delay',
+    description: 'Shown while both the badge and the fade trick are on',
+    showIf: { showBadge: [true], fadeEnabled: [true] },
+  },
+  {
+    key: 'badgeSound',
+    value: false,
+    name: 'Badge sound',
+    description: 'Shown while the badge is on, unless the notification is off',
+    showIf: { showBadge: [true] },
+    hideIf: { notifyMode: ['none'] },
+  },
+  {
+    key: 'tabWidth',
+    value: 0,
+    name: 'Tab width',
+    description: 'An integer with only an upper bound; 0 sizes each tab to its title',
+    max: 600,
+  },
+  {
+    key: 'tabAlignment',
+    value: 'left',
+    name: 'Tab title alignment',
+    description: 'Hidden while the tab width is 0, the integer for automatic',
+    options: [
+      { left: 'Left' } as Record<string, string>,
+      { center: 'Center' } as Record<string, string>,
+      { right: 'Right' } as Record<string, string>,
+    ],
+    hideIf: { tabWidth: [0] },
+  },
+  {
+    key: 'rendering',
+    value: [
+      {
+        key: 'useVisualStyles',
+        value: true,
+        name: 'Use visual styles',
+        description: 'A switch the group after this one names by a dotted path',
+      },
+    ],
+    name: 'Rendering',
+    description: 'A group whose switch gates the group after it',
+  },
+  {
+    key: 'customRendering',
+    value: [
+      {
+        key: 'renderBorder',
+        value: true,
+        name: 'Draw a border',
+        description: 'A switch its sibling group names by an outward lookup',
+      },
+      {
+        key: 'lightModeColors',
+        value: [
+          {
+            key: 'borderColor',
+            value: 'BCBCBC',
+            name: 'Border color',
+            format: 'colorRgb',
+          },
+        ],
+        name: 'Light mode colors',
+        description: 'A group shown while the border is drawn',
+        showIf: { 'customRendering.renderBorder': [true] },
+      },
+    ],
+    name: 'Custom rendering',
+    description: 'A group shown while visual styles are off',
+    showIf: { 'rendering.useVisualStyles': [false] },
+  },
+];
+
+// What the store holds for mockAnnotatedInitialSettings, in the spellings the
+// controls have to read right: a color typed with a `#` in lowercase, a decimal
+// held as the integer a DWORD reads back as, one spelled with a trailing zero,
+// a dropdown value neither the declaration nor the runtime list names, a
+// hotkey in the stored form, bounded numbers within their bounds, and the
+// gates at the values that hide their dependents.
+export const mockAnnotatedModSettings: Record<string, string | number> = {
+  accentColor: '#3399ff',
+  overlayColor: '80FFFFFF',
+  opacity: 1,
+  scale: '1.0',
+  'weights[0]': '0.25',
+  'weights[1]': '0.5',
+  'weights[2]': '1',
+  outputDevice: '{0.0.0.00000000}.{a1b2c3d4-0000-0000-0000-00000000dead}',
+  monitor: 'primary',
+  fontName: 'Segoe UI',
+  toggleHotkey: 'ctrl+alt+84',
+  'highlightColors[0]': '#ff8800',
+  'highlightColors[1]': '00AAFF',
+  homepageUrl: 'https://example.com/',
+  rating: 3,
+  zoom: '1.5',
+  iconSize: 24,
+  retries: 3,
+  'columnWidths[0]': 120,
+  'columnWidths[1]': 80,
+  'columnWidths[2]': 200,
+  'watchedDevices[0]': 'usb::046d:c52b',
+  fadeEnabled: 0,
+  fadeDelay: 100,
+  centerOffset: 0,
+  'fadeExclusions[0]': '',
+  notifyMode: 'none',
+  notifyText: '',
+  'actions[0].action': 'nothing',
+  'actions[0].args': '',
+  showBadge: 0,
+  badgeFadeDelay: 200,
+  badgeSound: 0,
+  tabWidth: 0,
+  tabAlignment: 'left',
+  'rendering.useVisualStyles': 1,
+  'customRendering.renderBorder': 1,
+  'customRendering.lightModeColors.borderColor': 'BCBCBC',
+};
+
 // The filler the browser's batches, ranking, search and filters are read for:
 // what those screens are about is the list rather than any one mod, so these
 // carry the least a card needs and none of them is on the machine.
@@ -280,6 +716,7 @@ const mockNumberedRepositoryMods: Record<string, RepositoryModType> =
               defaultSorting: 1,
               published: 1618321977408,
               updated: 1718321977408,
+              reviews: 0,
             },
           },
         },
@@ -288,8 +725,19 @@ const mockNumberedRepositoryMods: Record<string, RepositoryModType> =
 
 // The mod the home screen features, which the strip only shows while it is not
 // on the machine - so it is one of the numbered mods rather than the sample,
-// which is installed.
+// which is installed. It stands out of the filler by its numbers: enough users
+// for the card to draw a compact count, and a reviews document of its own.
 const FEATURED_MOD_ID = 'online050';
+mockNumberedRepositoryMods[FEATURED_MOD_ID] = {
+  repository: {
+    ...mockNumberedRepositoryMods[FEATURED_MOD_ID].repository,
+    details: {
+      ...mockNumberedRepositoryMods[FEATURED_MOD_ID].repository.details,
+      users: 12345,
+      reviews: 2,
+    },
+  },
+};
 
 const mockRepositoryMods: Record<string, RepositoryModType> = {
   // The sample mod, listed at the version an update of it would bring: it is the
@@ -305,11 +753,131 @@ const mockRepositoryMods: Record<string, RepositoryModType> = {
         defaultSorting: 2,
         published: 1618321977408,
         updated: 1718321977408,
+        reviews: 4,
       },
     },
   },
   ...mockNumberedRepositoryMods,
 };
+
+// The reviews of the two mods that have any: the sample mod, which both
+// browsers list and the machine has (so the header's reviews icon and the
+// card's popover open the same document), and the featured mod. The sample
+// mod's has one of each thing the modal draws: replies under a review, a
+// review the user voted on that the server counts at zero, a review in a
+// right-to-left script, and one long enough to wrap, written in markdown with
+// line breaks of its own and an image the modal does not draw.
+const mockModReviews: Record<string, ModReviewsDocument> = {
+  'custom-message-box': {
+    modId: 'custom-message-box',
+    reviews: [
+      {
+        id: 101,
+        parentId: null,
+        timestamp: 1757800000,
+        authorName: 'Jane',
+        modVersion: '0.1',
+        content: 'Works great on 24H2.\nThe seconds option is what I was after.',
+        votes: 3,
+      },
+      {
+        id: 102,
+        parentId: null,
+        timestamp: 1757850000,
+        authorName: 'Bob',
+        modVersion: '0.2',
+        content: 'Broke after a Windows update; reinstalling it fixed things.',
+        votes: 0,
+      },
+      {
+        id: 103,
+        parentId: null,
+        timestamp: 1757900000,
+        authorName: 'דנה',
+        modVersion: '0.2',
+        content: 'עובד מצוין, בדיוק מה שחיפשתי.',
+        votes: 1,
+      },
+      {
+        id: 104,
+        parentId: null,
+        timestamp: 1757950000,
+        authorName: 'Larry',
+        modVersion: null,
+        content: [
+          'A longer review, the kind that needs a few paragraphs.',
+          '',
+          'The first thing to say is that the mod **does what it says**, and does it on every monitor I tried it on, including one scaled to 175%.',
+          'The second is that the settings page could use a description or two, but the defaults are sensible enough that most people will never open it.',
+          '',
+          'Tried on:',
+          '',
+          '- a 4K monitor at 150%',
+          '- a laptop screen at 175%',
+          '',
+          '![The seconds option](https://example.com/seconds.png)',
+          '',
+          'Recommended.',
+        ].join('\n'),
+        votes: 2,
+      },
+      {
+        id: 105,
+        parentId: 101,
+        timestamp: 1757860000,
+        authorName: 'Bob',
+        modVersion: null,
+        content: 'Same here.',
+        votes: 0,
+      },
+      {
+        id: 106,
+        parentId: 101,
+        timestamp: 1757870000,
+        authorName: 'Jane',
+        modVersion: '0.1',
+        content: 'Glad it helped.',
+        votes: 1,
+      },
+    ],
+  },
+  [FEATURED_MOD_ID]: {
+    modId: FEATURED_MOD_ID,
+    reviews: [
+      {
+        id: 201,
+        parentId: null,
+        timestamp: 1758000000,
+        authorName: 'Ada',
+        modVersion: '1.2',
+        content: 'Does exactly one thing, and does it well.',
+        votes: 5,
+      },
+      {
+        id: 202,
+        parentId: null,
+        timestamp: 1758100000,
+        authorName: 'Grace',
+        modVersion: '1.2',
+        content: 'Would like an option to skip the first monitor.',
+        votes: 1,
+      },
+      {
+        id: 203,
+        parentId: 202,
+        timestamp: 1758150000,
+        authorName: 'John Smith',
+        modVersion: null,
+        content: 'Planned for the next version.',
+        votes: 0,
+      },
+    ],
+  },
+};
+
+// Where a mock post's ids start: past every id a document above uses, as the
+// server's counter would be.
+let nextMockReviewId = 1000;
 
 // The repository listing as a host answers it: the fixtures' repository side,
 // with the installed side joined in for every listed mod the machine has. The
@@ -361,6 +929,29 @@ export function installedModDetailsAfterOperation(
     latestVersion: installed?.latestVersion ?? null,
     userRating: installed?.userRating ?? 0,
   };
+}
+
+// The events a host pushes while it works on a command, ahead of its answer,
+// spread over the wait the answer takes. Only a capture that ran pushes them:
+// one the host refused (the reply carries an error) recorded nothing on the way.
+export function hostEventsBeforeReply(
+  command: string,
+  mockData: MockDataRegistry,
+  reply: Record<string, unknown>
+): Array<{ command: string; data: Record<string, unknown> }> {
+  if (command === 'captureHotkey' && reply['error'] === undefined) {
+    return mockData.hotkeyCapture.heldOnTheWay.map((modifiers) => ({
+      command: 'hotkeyCaptureProgress',
+      data: { modifiers },
+    }));
+  }
+  return [];
+}
+
+// How long the mock host takes to answer a command: at once, but for a capture,
+// which stands for the user pressing a shortcut.
+export function mockReplyDelayMs(command: string, mockData: MockDataRegistry): number {
+  return command === 'captureHotkey' ? mockData.hotkeyCapture.delayMs : 0;
 }
 
 // The events a host pushes of its own accord once it has answered a command,
@@ -449,6 +1040,12 @@ export const defaultMockData: MockDataRegistry = {
       latestVersion: mockModMetadataLargeOnline.version ?? null,
       userRating: 0,
     },
+    [ANNOTATED_MOD_ID]: {
+      metadata: mockModMetadataAnnotated,
+      config: mockModConfig,
+      latestVersion: null,
+      userRating: 0,
+    },
   },
 
   featuredMods: {
@@ -468,22 +1065,80 @@ export const defaultMockData: MockDataRegistry = {
   // The source text carries the mod so a diff against the repository side has
   // something to show; the large mod carries a whole one instead, so the diff has
   // the size a real one does.
-  installedModSourceData: (modId: string) => ({
-    source:
-      modId === LARGE_MOD_ID
-        ? largeModSourceInstalled
-        : '// Mock local source...\n',
-    metadata: modId === LARGE_MOD_ID ? mockModMetadataLarge : mockModMetadata,
-    readme: mockReadme,
-    initialSettings: mockInitialSettings,
-  }),
+  installedModSourceData: (modId: string) => {
+    if (modId === LARGE_MOD_ID) {
+      return {
+        source: largeModSourceInstalled,
+        metadata: mockModMetadataLarge,
+        readme: mockReadme,
+        initialSettings: mockInitialSettings,
+      };
+    }
+    if (modId === ANNOTATED_MOD_ID) {
+      return {
+        source: '// Mock local source...\n',
+        metadata: mockModMetadataAnnotated,
+        readme: mockReadme,
+        initialSettings: mockAnnotatedInitialSettings,
+      };
+    }
+    return {
+      source: '// Mock local source...\n',
+      metadata: mockModMetadata,
+      readme: mockReadme,
+      initialSettings: mockInitialSettings,
+    };
+  },
 
-  modSettings: {
-    'mock-setting': 'mock-setting-value',
-    'mock-setting-dropdown': 'mock-setting-value',
-    'mock-setting-array[0]': 'a',
-    'mock-setting-array[1]': 'b',
-    'mock-setting-array[2]': 'c',
+  modSettings: (modId: string) =>
+    modId === ANNOTATED_MOD_ID
+      ? mockAnnotatedModSettings
+      : {
+          'mock-setting': 'mock-setting-value',
+          'mock-setting-dropdown': 'mock-setting-value',
+          'mock-setting-array[0]': 'a',
+          'mock-setting-array[1]': 'b',
+          'mock-setting-array[2]': 'c',
+        },
+
+  // Keyed by the paths of mockAnnotatedInitialSettings. The runtime entry for
+  // `monitor` that names the declared option's value is what the merge
+  // relabels it by.
+  modDynamicSelectOptions: {
+    outputDevice: [
+      {
+        value: '{0.0.0.00000000}.{a1b2c3d4-0000-0000-0000-000000000001}',
+        label: 'Speakers (Realtek High Definition Audio)',
+      },
+      {
+        value: '{0.0.0.00000000}.{a1b2c3d4-0000-0000-0000-000000000002}',
+        label: 'Headphones',
+      },
+    ],
+    monitor: [
+      { value: 'primary', label: 'Primary monitor (runtime)' },
+      { value: '\\\\.\\DISPLAY2', label: 'DISPLAY2 - Dell U2720Q' },
+    ],
+    'rules.device': [{ value: 'usb::0483:5740', label: 'USB Serial Device (COM3)' }],
+    watchedDevices: [
+      { value: 'usb::046d:c52b', label: 'USB Receiver (Logitech)' },
+      { value: 'usb::0483:5740', label: 'USB Serial Device (COM3)' },
+    ],
+  },
+
+  pickedFilePath: 'C:\\Users\\me\\Music\\chime.wav',
+  pickedFolderPath: 'C:\\Users\\me\\Documents\\Logs',
+
+  fontFamilies: ['Arial', 'Cascadia Code', 'Consolas', 'Segoe UI', 'Segoe UI Variable'],
+
+  // Ctrl+Alt+F5, with Ctrl seen first and Alt after it.
+  hotkeyCapture: {
+    heldOnTheWay: [
+      { ctrl: true, alt: false, shift: false, win: false },
+      { ctrl: true, alt: true, shift: false, win: false },
+    ],
+    hotkey: 'ctrl+alt+116',
+    delayMs: 600,
   },
 
   modVersions: [
@@ -538,6 +1193,7 @@ export const defaultMockData: MockDataRegistry = {
   modConfig: {
     'custom-message-box': mockModConfig,
     [LARGE_MOD_ID]: mockModConfig,
+    [ANNOTATED_MOD_ID]: mockModConfig,
     'local@asdf2': mockModConfig,
     asdf3: mockModConfig,
     asdf4: mockModConfig,
@@ -604,6 +1260,23 @@ export const defaultMockData: MockDataRegistry = {
     ],
     appSettings: { requiresRestart: true },
   },
+
+  // ============================================================================
+  // Mod reviews
+  // ============================================================================
+
+  modReviews: (modId: string) => mockModReviews[modId] ?? null,
+
+  postModReview: () => Promise.resolve({ id: nextMockReviewId++ }),
+
+  // A vote on the review the server counts at zero, cast long enough ago for
+  // the server to be assumed to have it: what the modal draws for it is the
+  // floor a voted review never reads below.
+  reviewVotes: {
+    'custom-message-box': [{ reviewId: 102, timestamp: 1757000000 }],
+  },
+
+  commentsOverNetwork: false,
 
   // ============================================================================
   // Sidebar (editor mode)

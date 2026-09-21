@@ -19,7 +19,12 @@ const BROKER_FLAG: &str = "--runtime-broker";
 const CHANNEL_FLAG: &str = "--channel";
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // Lossily: `args` panics on an argument that is not Unicode, and the
+    // `windhawk://` handler makes the command line something a web page shapes.
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
     if args.first().map(String::as_str) != Some(BROKER_FLAG) {
         windhawk_ui::run();
         return ExitCode::SUCCESS;

@@ -14,7 +14,7 @@
  * message. Kept in lockstep with contract-version.json (a package test asserts
  * equality; the Rust host reads that JSON to check its own constant).
  */
-export const WEBVIEW_IPC_CONTRACT_VERSION = '1.13.0';
+export const WEBVIEW_IPC_CONTRACT_VERSION = '1.20.0';
 
 /**
  * The machine-readable error a reply carries on a command failure (mirrors the
@@ -277,6 +277,13 @@ export type RepositoryDetails = {
   defaultSorting: number;
   published: number;
   updated: number;
+  /**
+   * The number of approved top-level reviews (replies are not
+   * counted), as the catalog carries it. Absent from a catalog that predates
+   * the count, which a reader takes as "draw no reviews segment" rather than
+   * as zero: `0` says the mod has no reviews yet, absence says nothing.
+   */
+  reviews?: number;
 };
 
 // The two things about an installed mod that only the user profile knows, which
@@ -359,9 +366,67 @@ export type InitialSettingItem = {
   name?: string;
   description?: string;
   options?: Record<string, string>[];
+  /**
+   * `$format`: a display hint for the value, forwarded as the mod wrote it. The
+   * front-end draws a control for the formats it knows (`colorRgb`, `colorArgb`,
+   * `filePath`, `folderPath`, `fontFamily`, `hotkey`) on a string leaf, and the
+   * default control for the value type otherwise - so a format it does not know
+   * is a plain field, not an error.
+   */
+  format?: string;
+  /**
+   * `$float`: `value` is a decimal held as a string (or a string array), in the
+   * shortest decimal text that round-trips it. Present only when set, so an older
+   * reader sees the plain string setting it already is.
+   */
+  float?: true;
+  /**
+   * `$dynamicSelect`: the mod supplies dropdown options at runtime, read with
+   * getModDynamicSelectOptions and shown after any static `options`. Present
+   * only when set.
+   */
+  dynamicSelect?: true;
+  /**
+   * `$min` / `$max`: bounds on a number item (a `number` value, or a `$float`
+   * one), each the literal as the mod wrote it and present only when declared.
+   * The number controls hold the value to them and YAML mode reports a value
+   * outside them; a stored value outside them is shown as it is, not rejected.
+   */
+  min?: number;
+  max?: number;
+  /**
+   * `$showIf` / `$hideIf`: the settings this item's visibility depends on. Each
+   * key is the named setting's declaration path as the core resolved it -
+   * dotted, with no array subscripts (`group.enabled`, `rows.action`) - and
+   * every array on it encloses this item, so the front-end puts this item's own
+   * subscripts back: it copies the item's flat-key segments for as long as they
+   * match the path's and appends the path's remainder (`rows.action` beside
+   * `rows[2].args` is `rows[2].action`). Each value is the list of values, of
+   * the named setting's kind, under which the entry holds. The item is shown
+   * when every `showIf` entry holds and no `hideIf` one does, judged over the
+   * form's draft; a hidden setting is stored, saved and read like any other.
+   * Present only when declared.
+   */
+  showIf?: SettingConditions;
+  hideIf?: SettingConditions;
 };
 
 export type InitialSettings = InitialSettingItem[];
+
+/**
+ * The entries of one `$showIf` / `$hideIf` map: a setting's declaration path to
+ * the values under which the entry holds.
+ */
+export type SettingConditions = Record<string, (boolean | number | string)[]>;
+
+/**
+ * One option of a `$dynamicSelect` setting: what a selection stores, and the
+ * text the dropdown shows for it.
+ */
+export type DynamicSelectOption = {
+  value: string;
+  label: string;
+};
 
 // User-data export/import (the `data` feature). The archive bytes cross the wire as
 // an opaque string (the core owns the format); these types model the selection, the
@@ -646,6 +711,99 @@ export type UpdateModRatingReplyData = {
   error?: WireError;
 };
 
+/**
+ * One upvote the user cast on a review of a mod: the review's server id and
+ * when the vote was cast, in unix seconds (the server's convention for the
+ * review timestamps it sits beside). The host keeps it in the user profile,
+ * where it is the "voted" mark and the re-vote guard; the update check the app
+ * already makes delivers it to the server.
+ */
+export type ModReviewVote = {
+  reviewId: number;
+  timestamp: number;
+};
+
+/**
+ * voteModReview: record an upvote on a review or a reply of a repository
+ * mod. Not a toggle: a vote on a review already voted on is a
+ * successful no-op, and `retractModReviewVote` is the way back. The mod need
+ * not be installed - a vote from the online browser is on one that may not be.
+ * A local mod has no reviews, so the host refuses a `local@` id; the
+ * front-end never offers the surface for one.
+ */
+export type VoteModReviewData = {
+  modId: string;
+  reviewId: number;
+};
+
+/**
+ * `votes` is the mod's whole list after the write, in the order the votes were
+ * cast - the one just recorded among them - so the caller replaces its cache
+ * rather than merging. Empty with `succeeded: false`.
+ */
+export type VoteModReviewReplyData = {
+  modId: string;
+  votes: ModReviewVote[];
+  succeeded: boolean;
+  /**
+   * Present only on failure: the standard error object the host attaches.
+   */
+  error?: WireError;
+};
+
+/**
+ * retractModReviewVote: take a vote back, removing the pair `voteModReview`
+ * recorded for the review. The host removes it whenever asked; how long after
+ * the click a vote is offered for taking back is the front-end's rule alone. A
+ * review with no vote recorded is a successful no-op. The same refusals as the
+ * vote: a `reviewId` below 1 and a `local@` id.
+ */
+export type RetractModReviewVoteData = {
+  modId: string;
+  reviewId: number;
+};
+
+/**
+ * `votes` is the mod's whole list after the write, in cast order, without the
+ * vote taken back - unchanged when none was recorded - so the caller replaces
+ * its cache as it does with the vote's reply. Empty with `succeeded: false`,
+ * where the vote stands as it was: a host over a core from before the command
+ * refuses it as an unknown command, which lands here like any other failure.
+ */
+export type RetractModReviewVoteReplyData = {
+  modId: string;
+  votes: ModReviewVote[];
+  succeeded: boolean;
+  /**
+   * Present only on failure: the standard error object the host attaches.
+   */
+  error?: WireError;
+};
+
+/**
+ * getModReviewVotes: the votes the user cast on a mod's reviews, read when
+ * the reviews are shown so each voted review draws as such.
+ */
+export type GetModReviewVotesData = {
+  modId: string;
+};
+
+/**
+ * `votes` is every vote recorded for the mod in cast order, empty for a mod
+ * the user never voted on. Empty with the error attached where the read
+ * failed - a host over a core from before the command included - which the
+ * front-end takes as "no votes, and no voting" rather than as an empty list.
+ */
+export type GetModReviewVotesReplyData = {
+  modId: string;
+  votes: ModReviewVote[];
+  /**
+   * Present only on failure: the standard error object the host attaches (the
+   * base reply carries an empty list alongside it).
+   */
+  error?: WireError;
+};
+
 export type GetInstalledModsReplyData = {
   installedMods: Record<
     string,
@@ -761,6 +919,133 @@ export type SetModSettingsReplyData = {
    * Present only on failure: the standard error object the host attaches.
    */
   error?: WireError;
+};
+
+/**
+ * getModDynamicSelectOptions: the options a mod wrote at runtime for its
+ * `$dynamicSelect` settings, keyed by setting path - the flat key with every
+ * `[n]` removed, so the rows of an object array share one set. The webview asks
+ * when the settings editor mounts and again each time a dynamic dropdown opens;
+ * nothing pushes a change from the engine.
+ */
+export type GetModDynamicSelectOptionsData = {
+  modId: string;
+};
+
+/**
+ * `options` holds each path's entries in the order the mod wrote them, and is
+ * empty for a mod that wrote none. Whether a path names a `$dynamicSelect` item
+ * is the webview's lookup against the mod's initialSettings, not a host check.
+ */
+export type GetModDynamicSelectOptionsReplyData = {
+  modId: string;
+  options: Record<string, DynamicSelectOption[]>;
+  /**
+   * Present only on failure: the standard error object the host attaches (the
+   * base reply carries an empty options map alongside it).
+   */
+  error?: WireError;
+};
+
+/**
+ * pickFilePath: run the host's native Open dialog for a `filePath` or
+ * `folderPath` setting. A file input inside the webview yields no filesystem
+ * path, so the host owns the pick. `folder` asks for a folder dialog (a
+ * `folderPath` setting); absent, the dialog picks an existing file.
+ * `currentPath` seeds the dialog: a file's folder and name when that folder
+ * exists, a folder itself when it exists. `modId` and `settingKey` say which
+ * setting is asking, for logging - the host does not act on them.
+ */
+export type PickFilePathData = {
+  modId: string;
+  settingKey: string;
+  currentPath?: string;
+  folder?: true;
+};
+
+/**
+ * `path` is the chosen file or folder; `canceled` marks a dismissed dialog (a
+ * benign no-op, no error surfaced). Exactly one of the two is present unless the
+ * dialog failed.
+ */
+export type PickFilePathReplyData = {
+  path?: string;
+  canceled?: true;
+  /**
+   * Present only on failure: the standard error object the host attaches.
+   */
+  error?: WireError;
+};
+
+/**
+ * listFontFamilies: the font families installed on the host machine, for a
+ * `fontFamily` setting's completion. A host query because the webview cannot
+ * enumerate fonts on its own (queryLocalFonts is permission-gated and not
+ * something the extension's webview gets). Sent once per settings editor that
+ * declares such a setting, and held for the editor's lifetime.
+ */
+export type ListFontFamiliesData = NoData;
+
+/**
+ * `families` are family names as a font picker shows them (`Segoe UI`,
+ * `Consolas`): deduplicated, sorted case-insensitively, without the `@`-prefixed
+ * vertical variants. Empty when the host could not list them, with the error
+ * attached; the control then takes free text.
+ */
+export type ListFontFamiliesReplyData = {
+  families: string[];
+  /**
+   * Present only on failure: the standard error object the host attaches (the
+   * base reply carries an empty list alongside it).
+   */
+  error?: WireError;
+};
+
+/**
+ * captureHotkey: record the next keyboard shortcut pressed, for a `hotkey`
+ * setting's badge. The host runs the capture through the core, which takes every
+ * key ahead of Windows while it runs, so a Win shortcut is recorded and nothing
+ * acts on it. The reply lands when the capture ends; the modifiers held along the
+ * way arrive as hotkeyCaptureProgress events. A host runs one capture at a time:
+ * a new request ends the running one, which then replies as `canceled`.
+ */
+export type CaptureHotkeyData = NoData;
+
+/**
+ * Why a capture ended with no shortcut: `canceled` (cancelCaptureHotkey, or a
+ * newer captureHotkey), `focusLost` (another window came to the front - a click
+ * elsewhere), `timeout` (15 seconds passed with no shortcut).
+ */
+export type HotkeyCaptureCanceledReason = 'canceled' | 'focusLost' | 'timeout';
+
+/**
+ * `hotkey` is the shortcut in the stored form (`ctrl+alt+84`), or null with
+ * `canceled` naming why there is none. A capture the host could not START - an
+ * older core not knowing the command, or a keyboard hook that could not be
+ * installed - answers `hotkey: null` with the error attached and no `canceled`;
+ * the webview takes that as the cue for its manual editor.
+ */
+export type CaptureHotkeyReplyData = {
+  hotkey: string | null;
+  canceled?: HotkeyCaptureCanceledReason;
+  /**
+   * Present only on failure: the standard error object the host attaches.
+   */
+  error?: WireError;
+};
+
+/**
+ * cancelCaptureHotkey: end the capture in flight, if any; its own reply still
+ * arrives, as `canceled`. Bare like cancelUpdate: there is at most one.
+ */
+export type CancelCaptureHotkeyData = NoData;
+
+/**
+ * `signaled` is whether a capture was in flight and told to stop; false is the
+ * harmless no-op of a cancel that found none, one that ended first included.
+ */
+export type CancelCaptureHotkeyReplyData = {
+  signaled: boolean;
 };
 
 export type GetModConfigData = {
@@ -1005,6 +1290,27 @@ export type DevToolsInstallDownloadProgressEventData = {
 };
 
 export type DevToolsInstallingEventData = NoData;
+
+/**
+ * The modifier keys held during a hotkey capture, each folded from its left and
+ * right variants.
+ */
+export type HotkeyCaptureModifiers = {
+  ctrl: boolean;
+  alt: boolean;
+  shift: boolean;
+  win: boolean;
+};
+
+/**
+ * hotkeyCaptureProgress: the modifiers held, pushed on every change of that set
+ * while a captureHotkey is in flight and before its shortcut is complete. It is
+ * what the badge draws while recording: the capture takes every key, so nothing
+ * else on screen shows that a key went down.
+ */
+export type HotkeyCaptureProgressEventData = {
+  modifiers: HotkeyCaptureModifiers;
+};
 
 /**
  * One updateInstalledModsDetails entry: the profile-held pair, and the two terms

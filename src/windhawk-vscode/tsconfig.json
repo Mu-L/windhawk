@@ -8,8 +8,8 @@
 		"strict": true,
 		"rootDir": "src",
 		"useUnknownInCatchVariables": false,
-		// Node globals (process, fs, path, __dirname, node:test). Declared
-		// explicitly because moduleResolution "bundler" does not blanket-include
+		// Node globals (process, fs, path, __dirname). Declared explicitly
+		// because moduleResolution "bundler" does not blanket-include
 		// node_modules/@types; the extension and the core client both run in
 		// Node.
 		"types": ["node"],

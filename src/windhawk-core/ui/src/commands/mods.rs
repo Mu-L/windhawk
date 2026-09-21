@@ -1,24 +1,33 @@
 //! Per-mod handlers: the reads `getInstalledMods`, `getModSourceData`,
-//! `getModSettings`, `getModConfig`, and the synchronous writes
-//! `setModSettings`, `updateModConfig`, `enableMod`, `deleteMod`,
-//! `updateModRating`. Each parses the envelope `data` into a typed request DTO,
-//! calls the host, and shapes the reply. A core failure is represented inline
-//! (an empty map / `null` on a read, `succeeded: false` on a write), matching
-//! the extension's `try/catch`; the only `Err` a handler propagates is a
-//! malformed `data` it cannot decode, which the bridge default-shapes (the
-//! one-reply invariant backstop).
+//! `getModSettings`, `getModDynamicSelectOptions`, `getModConfig`,
+//! `getModReviewVotes`, the synchronous writes `setModSettings`,
+//! `updateModConfig`, `enableMod`, `deleteMod`, `updateModRating`,
+//! `voteModReview`, `retractModReviewVote`, and the two the settings editor's controls
+//! ask the host for: `pickFilePath`, the native Open picker a `filePath` or
+//! `folderPath` setting's Browse button runs, and `listFontFamilies`, the
+//! installed families a `fontFamily` setting completes over. Each parses the envelope `data` into
+//! a typed request DTO, calls the host, and shapes the reply. A core failure is
+//! represented inline (an empty map / `null` on a read, `succeeded: false` on a
+//! write), matching the extension's `try/catch`; the only `Err` a handler
+//! propagates is a malformed `data` it cannot decode, which the bridge
+//! default-shapes (the one-reply invariant backstop).
+
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use windhawk_core_host::{HostError, SessionApiExt};
 use windhawk_core_protocol::{
-    CompileInstalledModParams, GetInstalledModDetailsParams, InstallModParams,
+    CompileInstalledModParams, ErrorCode, GetInstalledModDetailsParams, InstallModParams,
     ListInstalledModsParams, ModConfigPatch, ModIdParams, ModMetadata, ParseModSourceParams,
-    ParsedModSource, SetModEnabledParams, SetModRatingParams, SetModSettingsParams,
-    UpdateModConfigParams,
+    ParsedModSource, RetractModReviewVoteParams, ReviewVoteDto, ReviewVotesResult,
+    SetModEnabledParams, SetModRatingParams, SetModSettingsParams, UpdateModConfigParams,
+    VoteModReviewParams, WireError,
 };
 
-use crate::commands::{app_language, app_settings, check_for_updates, language};
+use crate::commands::{app_language, app_settings, check_for_updates, dialog_error, language};
+use crate::file_dialog::{DialogOutcome, PickTarget};
+use crate::fonts;
 use crate::ipc::bridge::BridgeCtx;
 use crate::ipc::envelope::Envelope;
 use crate::ipc::outcome::{AsyncKind, AsyncOp, Completion, FollowUp, Outcome, Terminal};
@@ -27,7 +36,9 @@ use crate::shape;
 use crate::shape::installed::installed_mods_reply;
 use crate::shape::source::mod_source_data_reply;
 use crate::shape::webview_ipc::{
-    EnableModReply, GetModSettingsReply, SetNewModConfig, UpdateModRatingReply, WriteReply, to_wire,
+    EnableModReply, GetModDynamicSelectOptionsReply, GetModReviewVotesReply, GetModSettingsReply,
+    ListFontFamiliesReply, PickFilePathReply, RetractModReviewVoteReply, SetNewModConfig,
+    UpdateModRatingReply, VoteModReviewReply, WriteReply, to_wire,
 };
 
 /// `getInstalledMods`: the installed-mods listing (metadata + config + update flag +
@@ -97,6 +108,111 @@ pub fn get_mod_settings(ctx: &BridgeCtx, data: &Value) -> Result<Outcome, HostEr
         }
     };
     Ok(Outcome::Reply(reply))
+}
+
+/// `getModDynamicSelectOptions`: the options a mod wrote at runtime for its
+/// `$dynamicSelect` settings, keyed by setting path, or an empty map on a core
+/// error. Forwarded untouched: the core decodes the reserved local-storage name
+/// pattern and keeps the order the mod wrote in, and neither is re-derived here.
+pub fn get_mod_dynamic_select_options(ctx: &BridgeCtx, data: &Value) -> Result<Outcome, HostError> {
+    let params = parse_mod_id(data)?;
+    let reply = match ctx.session.invoke("getModDynamicSelectOptions", &params) {
+        Ok(options) => to_wire(GetModDynamicSelectOptionsReply {
+            mod_id: params.mod_id,
+            options,
+        }),
+        Err(error) => {
+            eprintln!(
+                "windhawk-ui: getModDynamicSelectOptions for '{}' failed: {error}",
+                params.mod_id
+            );
+            let mut data = to_wire(GetModDynamicSelectOptionsReply {
+                mod_id: params.mod_id,
+                options: json!({}),
+            });
+            reply::attach_error(&mut data, &error);
+            data
+        }
+    };
+    Ok(Outcome::Reply(reply))
+}
+
+/// `pickFilePath`: run the native Open picker for a `filePath` setting, or the
+/// folder picker for a `folderPath` one (`folder: true`), seeded with the
+/// setting's current value. `{ path }` for a chosen path, `{ canceled: true }`
+/// for a dismissed dialog (a benign no-op, no error), and an attached error when
+/// the dialog could not be shown. The mod and setting the request names are for
+/// the log only; nothing about the pick depends on them.
+pub fn pick_file_path(ctx: &BridgeCtx, data: &Value) -> Result<Outcome, HostError> {
+    let req: PickFilePathRequest = serde_json::from_value(data.clone())?;
+    let initial = req
+        .current_path
+        .as_deref()
+        .filter(|path| !path.is_empty())
+        .map(Path::new);
+    let target = if req.folder {
+        PickTarget::Folder
+    } else {
+        PickTarget::File
+    };
+    let reply = match ctx.file_dialog.pick_file(target, initial) {
+        DialogOutcome::Picked(path) => to_wire(PickFilePathReply {
+            path: Some(path.to_string_lossy().into_owned()),
+            canceled: None,
+        }),
+        DialogOutcome::Canceled => to_wire(PickFilePathReply {
+            path: None,
+            canceled: Some(true),
+        }),
+        DialogOutcome::Failed(message) => {
+            eprintln!(
+                "windhawk-ui: pickFilePath for '{}' setting '{}' failed: {message}",
+                req.mod_id, req.setting_key
+            );
+            let mut reply = to_wire(PickFilePathReply::default());
+            reply::attach_error(&mut reply, &dialog_error(&message));
+            reply
+        }
+    };
+    Ok(Outcome::Reply(reply))
+}
+
+/// The `pickFilePath` envelope `data` (`{ modId, settingKey, currentPath?,
+/// folder? }`, the front-end's `PickFilePathData`). There is no core command
+/// behind it, so the request has no protocol DTO to decode into.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PickFilePathRequest {
+    mod_id: String,
+    setting_key: String,
+    #[serde(default)]
+    current_path: Option<String>,
+    #[serde(default)]
+    folder: bool,
+}
+
+/// `listFontFamilies`: the installed font families for a `fontFamily` setting's
+/// completion, enumerated natively (`crate::fonts`). An empty list with the error
+/// attached when the enumeration fails; the control then takes free text.
+pub fn list_font_families(_ctx: &BridgeCtx, _data: &Value) -> Result<Outcome, HostError> {
+    let reply = match fonts::list_font_families() {
+        Ok(families) => to_wire(ListFontFamiliesReply { families }),
+        Err(message) => {
+            eprintln!("windhawk-ui: listFontFamilies failed: {message}");
+            let mut reply = to_wire(ListFontFamiliesReply::default());
+            reply::attach_error(&mut reply, &font_error(&message));
+            reply
+        }
+    };
+    Ok(Outcome::Reply(reply))
+}
+
+/// A font-enumeration (GDI) failure as an internal wire error.
+fn font_error(message: &str) -> HostError {
+    HostError::wire(WireError::new(
+        ErrorCode::Internal,
+        format!("font enumeration: {message}"),
+    ))
 }
 
 /// `getModSourceData`: the stored source plus the metadata/readme/initialSettings
@@ -217,6 +333,82 @@ pub fn update_mod_rating(ctx: &BridgeCtx, data: &Value) -> Result<Outcome, HostE
         ..Default::default()
     };
     Ok(Outcome::Reply(finish_write(reply, result)))
+}
+
+/// `voteModReview`: record an upvote on a review of a repository mod as a
+/// profile write (a repeat is a successful no-op in the core). The reply carries
+/// the mod's whole list of votes after the write, so the front-end replaces its
+/// cache with it; an empty list with the error attached on failure - a core
+/// from before the command refuses it as an unknown command, which lands here
+/// the same way.
+pub fn vote_mod_review(ctx: &BridgeCtx, data: &Value) -> Result<Outcome, HostError> {
+    let params: VoteModReviewParams = serde_json::from_value(data.clone())?;
+    let (votes, result) = match invoke_votes(ctx, "voteModReview", &params) {
+        Ok(votes) => (votes, Ok(())),
+        Err(error) => (Vec::new(), Err(error)),
+    };
+    let reply = VoteModReviewReply {
+        mod_id: params.mod_id,
+        votes,
+        ..Default::default()
+    };
+    Ok(Outcome::Reply(finish_write(reply, result)))
+}
+
+/// `retractModReviewVote`: take a vote back as a profile write (a review with
+/// no vote recorded is a successful no-op in the core). The reply carries the
+/// mod's whole list of votes after the write, as the vote's does; an empty list
+/// with the error attached on failure, where the vote stands - a core from
+/// before the command refuses it as an unknown command, which lands here the
+/// same way.
+pub fn retract_mod_review_vote(ctx: &BridgeCtx, data: &Value) -> Result<Outcome, HostError> {
+    let params: RetractModReviewVoteParams = serde_json::from_value(data.clone())?;
+    let (votes, result) = match invoke_votes(ctx, "retractModReviewVote", &params) {
+        Ok(votes) => (votes, Ok(())),
+        Err(error) => (Vec::new(), Err(error)),
+    };
+    let reply = RetractModReviewVoteReply {
+        mod_id: params.mod_id,
+        votes,
+        ..Default::default()
+    };
+    Ok(Outcome::Reply(finish_write(reply, result)))
+}
+
+/// `getModReviewVotes`: the votes recorded for a mod, empty for one the profile
+/// has no entry for, and empty with the error attached when the read failed.
+pub fn get_mod_review_votes(ctx: &BridgeCtx, data: &Value) -> Result<Outcome, HostError> {
+    let params = parse_mod_id(data)?;
+    let reply = match invoke_votes(ctx, "getModReviewVotes", &params) {
+        Ok(votes) => to_wire(GetModReviewVotesReply {
+            mod_id: params.mod_id,
+            votes,
+        }),
+        Err(error) => {
+            let mut data = to_wire(GetModReviewVotesReply {
+                mod_id: params.mod_id,
+                ..Default::default()
+            });
+            reply::attach_error(&mut data, &error);
+            data
+        }
+    };
+    Ok(Outcome::Reply(reply))
+}
+
+/// Invoke one of the review-vote commands, all of which answer the mod's vote
+/// list, logging a failure like [`invoke_write`] does.
+fn invoke_votes<P: Serialize>(
+    ctx: &BridgeCtx,
+    command: &str,
+    params: &P,
+) -> Result<Vec<ReviewVoteDto>, HostError> {
+    ctx.session
+        .invoke_as::<ReviewVotesResult, _>(command, params)
+        .map(|result| result.votes)
+        .inspect_err(|error| {
+            eprintln!("windhawk-ui: {command} failed: {error}");
+        })
 }
 
 /// `installMod`: download-or-compile and install a repository mod. The
@@ -617,13 +809,14 @@ fn invoke_write<P: Serialize>(ctx: &BridgeCtx, command: &str, params: &P) -> Res
         })
 }
 
-/// Finish a write reply: serialize the typed `base` (its echo fields - `modId`, and
-/// `enabled`/`rating` where the contract echoes the requested value), stamp the
-/// `succeeded` flag from the outcome, and on failure attach the error object the
-/// front-end surfaces. `succeeded` is derived HERE, not by the caller, so it cannot
-/// disagree with the attached error - `finish_write` is its single writer. The error
-/// stays OUT of the struct so `reply::error_object` remains its single owner: the DTO
-/// guards the echo shape, `succeeded` + the attached object guard the outcome.
+/// Finish a write reply: serialize the typed `base` (`modId`, the `enabled`/`rating`
+/// a contract echoes from the request, the vote list `voteModReview` answers),
+/// stamp the `succeeded` flag from the outcome, and on failure attach the error
+/// object the front-end surfaces. `succeeded` is derived HERE, not by the caller, so
+/// it cannot disagree with the attached error - `finish_write` is its single writer.
+/// The error stays OUT of the struct so `reply::error_object` remains its single
+/// owner: the DTO guards the base shape, `succeeded` + the attached object guard the
+/// outcome.
 fn finish_write<B: Serialize>(base: B, result: Result<(), HostError>) -> Value {
     let mut value = to_wire(base);
     if let Value::Object(map) = &mut value {

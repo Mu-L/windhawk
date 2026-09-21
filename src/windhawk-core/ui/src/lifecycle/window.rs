@@ -1,12 +1,13 @@
 //! The launcher contract Rust side and the fatal startup presentation. The
-//! single-instance plugin (registered in `lib.rs`) makes a bare re-launch
-//! ensure-running-and-foreground; this module holds the small Win32 + window
-//! helpers it drives: the process AppUserModelID, the foreground hand-off, the
+//! single-instance plugin (registered in `lib.rs`) makes a re-launch
+//! ensure-running-and-foreground, plus a navigation when its argv carries a
+//! `windhawk://` link (`crate::deeplink`); this module holds the small Win32 +
+//! window helpers it drives: the process AppUserModelID, the foreground hand-off, the
 //! bring-to-front, the `Local\WindhawkUI` mutex the UI reads to spot a second
-//! instance, the placement and activation of the main window as it is created and
-//! the state it is first seen in,
-//! and the native task dialog for a fatal failure (there is no webview to show it
-//! in), whose expander carries the diagnostics `lifecycle::diagnostics` collected.
+//! instance, the placement of the main window as it is created and the state it is
+//! first seen in, and the native task dialog for a fatal failure (there is no
+//! webview to show it in), whose expander carries the diagnostics
+//! `lifecycle::diagnostics` collected.
 
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 use std::sync::{Condvar, Mutex};
@@ -45,7 +46,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     IsWindowVisible, MB_ICONERROR, MB_OK, MB_SYSTEMMODAL, MessageBoxW, SWP_NOACTIVATE, SWP_NOMOVE,
     SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SendMessageW, SetForegroundWindow, SetWindowPos,
     SetWindowsHookExW, USER_DEFAULT_SCREEN_DPI, UnhookWindowsHookEx, WH_CALLWNDPROC,
-    WINDOWPLACEMENT, WINDOWPOS, WM_CREATE, WM_WINDOWPOSCHANGED, WM_WINDOWPOSCHANGING,
+    WINDOWPLACEMENT, WINDOWPOS, WM_CREATE, WM_WINDOWPOSCHANGING,
 };
 use windows_sys::core::HRESULT;
 
@@ -293,24 +294,21 @@ static SHOWS_HELD_BACK: AtomicU32 = AtomicU32::new(0);
 
 /// How many shows may be held back before they are simply let through.
 ///
-/// Two, which is how many a maximized launch makes and undoes on its way up. It is a
-/// ceiling rather than a count of a known sequence: what is being held back is a show
-/// that is about to be taken back, and being wrong about that costs a window nobody
-/// ever shows - so past the shows there is reason to expect, the window goes up.
-const SHOWS_TO_HOLD_BACK: u32 = 2;
+/// One, which is how many a maximized launch makes on its way up before the maximize
+/// (see [`prepare_main_window_creation`]). It is a ceiling rather than a count of a
+/// known sequence: what is being held back is a show the maximize is about to
+/// replace, and being wrong about that costs a window nobody ever shows - so past the
+/// shows there is reason to expect, the window goes up.
+const SHOWS_TO_HOLD_BACK: u32 = 1;
 
 /// The id [`hold_the_window_back_until_maximized`] registers its subclass under, which
 /// only has to be unique among the subclasses this module puts on a window.
 const SHOW_SUBCLASS_ID: usize = 1;
 
-/// Whether the main window has been seen as the foreground window, which is where
-/// [`take_foreground`] stops asking for it.
-static FOREGROUND_TAKEN: AtomicBool = AtomicBool::new(false);
-
-/// Watch the main window's creation to give it the four things the builder cannot: its
+/// Watch the main window's creation to give it the three things the builder cannot: its
 /// exact rectangle (`placement`, when there is one to hold it to), the icons it is shown
-/// with, the activation that puts the launch in front of the user, and - for a launch
-/// that opens `maximized` - a first appearance that is already maximized.
+/// with, and - for a launch that opens `maximized` - a first appearance that is already
+/// maximized.
 ///
 /// Must be called on the thread that is about to build it, and just before - after
 /// `splash::show`, whose hook watches for the same `WM_CREATE`, so that this one (the
@@ -328,51 +326,48 @@ static FOREGROUND_TAKEN: AtomicBool = AtomicBool::new(false);
 /// position. Either way the window opens somewhere it was not meant to.
 ///
 /// A rectangle in physical pixels has no such ambiguity, and `WM_CREATE` is where it
-/// can still be applied for free: tao creates the window WITHOUT `WS_VISIBLE` and only
-/// shows it at the end of the build, after reading back the DPI of the display the
-/// window ended up on and after maximizing it. So the move lands before anyone can see
-/// it, before tao caches a scale factor, and before a maximize that would otherwise
-/// claim the wrong display - and what is finally shown is the remembered rectangle,
-/// with nothing to correct afterwards.
+/// can still be applied for free: tao creates the window WITHOUT `WS_VISIBLE`, shows it
+/// only from its own handling of `WM_CREATE` - after this hook has seen the message -
+/// and maximizes it only once the creation has returned. So the move lands before
+/// anyone can see it and before a maximize that would otherwise claim the wrong
+/// display, and what is finally shown is the remembered rectangle, with nothing to
+/// correct afterwards. The scale factor tao read as it created the window is not left
+/// behind by a move onto a display at another scale: the move raises `WM_DPICHANGED`,
+/// which tao answers as it would for any later move, before the size is worked out
+/// below for the DPI the window then has.
 ///
 /// # The icons
 ///
 /// tao gives the window one icon of its own, the 256x256 image Tauri decodes out of
 /// `icon.ico`, which Windows then squeezes into the caption's ~16px slot
-/// (`shell::apply_window_icons_to`). That set happens after `WM_CREATE` and before the
-/// show, so the show is the first point where crisper ones stick - and it is still
-/// ahead of the frame and the taskbar button that would otherwise have carried tao's.
+/// (`shell::apply_window_icons_to`). That set happens as tao handles `WM_CREATE`
+/// itself, after this hook has seen it, and before the show, so the show is the first
+/// point where crisper ones stick - and it is still ahead of the frame and the taskbar
+/// button that would otherwise have carried tao's.
 /// `WM_WINDOWPOSCHANGING` with `SWP_SHOWWINDOW` is that point: the hook sees it before
 /// the window procedure makes the window visible.
 ///
-/// # The activation
-///
-/// The window is built unfocused, which is what keeps wry's `MoveFocus` off the webview
-/// build (`run`), and tao reads that as a window to show without activating
-/// (`SW_SHOWNOACTIVATE`). The activation a launch is expected to carry is asked for
-/// here instead, on the show itself, so the app is in front of the user for the whole
-/// of the WebView2 build rather than from half a second after it.
-///
 /// # The maximized state
 ///
-/// A window the builder is asked to open maximized reaches the screen three times, and
-/// the first two are taken back. tao maximizes it and makes it visible in two separate
-/// flag updates, and the maximize comes first: `SW_MAXIMIZE` on a window whose flags do
-/// not carry `VISIBLE` yet, which SHOWS it - every `ShowWindow` command but `SW_HIDE`
-/// does - followed immediately by the `SW_HIDE` that its own flags then ask for. The
-/// update behind it shows the window with `SW_SHOWNOACTIVATE`, which carries
-/// `SW_SHOWNORMAL`'s meaning of "in its most recent size and position", so it RESTORES
-/// the window it is showing, and only then maximizes it again.
+/// A window the builder is asked to open maximized reaches the screen twice on its way
+/// up. tao shows it as it is created - `SW_SHOW` from its own `WM_CREATE` handling,
+/// which is where the builder's `visible` lands - at its restored size, and maximizes it
+/// only once the creation has returned: `SW_MAXIMIZE`, which takes the window that is
+/// already up and animates it out to fill the screen, followed by a second `SW_SHOW` on
+/// the maximized window that changes nothing on screen.
 ///
-/// What the user is shown is the window flashing up maximized, going away, and coming
-/// back at its restored size to be animated up to fill the screen - with each of the
-/// first two appearances carrying the start of the window-open animation the one after
-/// it abandons.
+/// What the user is shown is the window coming up at its restored size and then
+/// growing to fill the screen.
 ///
-/// So the shows that lead up to the last one are shows that are about to be undone, and
-/// a window that opens maximized is subclassed as it is created to hold them back
-/// ([`hold_the_window_back_until_maximized`]). What is left is the maximize at the end,
-/// which is then the window's first appearance and its only one.
+/// So the show that leads up to the maximize is a show the maximize is about to replace,
+/// and a window that opens maximized is subclassed as it is created to hold it back
+/// ([`hold_the_window_back_until_maximized`]). What is left is the maximize, which is
+/// then the window's first appearance.
+///
+/// That rests on the window being built focused, as it is: tao shows an unfocused
+/// window with `SW_SHOWNOACTIVATE`, which RESTORES a maximized window, and it issues
+/// that show after the maximize, so a maximized launch built unfocused comes up
+/// restored whatever is held back here (tauri-apps/tao#1338).
 pub fn prepare_main_window_creation(placement: Option<Placement>, maximized: bool) {
     *PENDING_PLACEMENT
         .lock()
@@ -380,12 +375,11 @@ pub fn prepare_main_window_creation(placement: Option<Placement>, maximized: boo
     PENDING_MAXIMIZED.store(maximized, Ordering::Release);
     HELD_BACK_WINDOW.store(0, Ordering::Release);
     SHOWS_HELD_BACK.store(0, Ordering::Release);
-    FOREGROUND_TAKEN.store(false, Ordering::Release);
 
     // SAFETY: a hook on this thread only (its own id), with a plain fn of the
     // documented signature as the procedure. It is removed exactly once, by
     // `finish_main_window_creation`; a null return means it was not installed, where
-    // the window simply opens where the builder put it and unactivated.
+    // the window simply opens where the builder put it.
     let hook = unsafe {
         SetWindowsHookExW(
             WH_CALLWNDPROC,
@@ -448,14 +442,12 @@ fn show_a_window_left_held_back(hwnd: HWND) {
 }
 
 /// Place the main window as it is created, subclass it there if the state it is to open
-/// in is one the builder cannot show it in, give it its icons as it is shown, and ask for
-/// the foreground with it.
+/// in is one the builder cannot show it in, and give it its icons as it is shown.
 unsafe extern "system" fn main_window_creation_hook(
     code: i32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    let mut positioned = None;
     // A negative code is not ours to inspect; the message must be passed straight on.
     if code >= 0 {
         // SAFETY: for a non-negative code the hook contract makes `lparam` a live
@@ -482,23 +474,13 @@ unsafe extern "system" fn main_window_creation_hook(
             {
                 shell::apply_window_icons_to(message.hwnd);
             }
-            WM_WINDOWPOSCHANGED if class_name_is(message.hwnd, MAIN_WINDOW_CLASS) => {
-                positioned = Some(message.hwnd);
-            }
             _ => {}
         }
     }
 
     // SAFETY: the arguments are the ones the hook procedure was handed, passed on to
     // the rest of the chain as the contract requires.
-    let result = unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) };
-    if let Some(hwnd) = positioned {
-        // Outside the message match, so no lock is held: taking the foreground sends
-        // the window its activation messages, which re-enter this procedure, and a
-        // `std` mutex is not reentrant.
-        take_foreground(hwnd);
-    }
-    result
+    unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
 }
 
 /// Whether a `WM_WINDOWPOSCHANGING` is the one that puts its window on the screen.
@@ -564,10 +546,9 @@ unsafe extern "system" fn maximized_show_subclass(
 /// style: the rectangle is what the person in front of it sees, and it says the same
 /// thing whether Windows has updated `WS_MAXIMIZE` before this message or after it.
 ///
-/// The rectangle alone cannot say WHICH maximized show this is, since the first and the
-/// last land on the same one. What separates them is that the last comes after the
-/// restore, so the show to let through is a maximized one with something already held
-/// back behind it - and past [`SHOWS_TO_HOLD_BACK`] every show goes up regardless.
+/// Every show onto a maximized rectangle goes through - the first is the appearance
+/// this exists for, and the one tao issues after it changes nothing on screen - and
+/// past [`SHOWS_TO_HOLD_BACK`] every show goes up regardless.
 ///
 /// # Safety
 ///
@@ -596,8 +577,7 @@ unsafe fn hold_the_show_back(hwnd: HWND, lparam: LPARAM) {
 /// The rule behind [`hold_the_show_back`], over what it reads: whether the show puts the
 /// window on a `maximized` rectangle, and how many shows have been `held_back` already.
 fn holds_the_show_back(maximized: bool, held_back: u32) -> bool {
-    let last_appearance = maximized && held_back > 0;
-    !last_appearance && held_back < SHOWS_TO_HOLD_BACK
+    !maximized && held_back < SHOWS_TO_HOLD_BACK
 }
 
 /// Whether the rectangle a `WM_WINDOWPOSCHANGING` leaves the window on covers the work
@@ -654,39 +634,6 @@ unsafe fn fills_the_work_area(hwnd: HWND, position: &WINDOWPOS) -> bool {
         && rect.top <= work_area.top
         && rect.right >= work_area.right
         && rect.bottom >= work_area.bottom
-}
-
-/// Ask for `hwnd` to be the foreground window, until it is one on screen.
-///
-/// Answered on every position change rather than on the one that first shows the
-/// window, because tao shows the window more than once on the way up: one opening
-/// maximized is shown, hidden and shown again, and the styles are pushed through a
-/// further `SetWindowPos` after that. A window taken back off the screen has not had
-/// the show this is for, so the asking resumes; once it is up and in front, the ones
-/// that follow cost two reads.
-///
-/// Asking is all this does. Windows grants the foreground to a launch the user made and
-/// refuses it to one made in the background, which is the wanted answer in both cases,
-/// and the window the user turned to while this one was coming up keeps it: by then
-/// this has what it asked for and has stopped.
-fn take_foreground(hwnd: HWND) {
-    // SAFETY: `hwnd` is the live main window the hook is reporting on. The calls only
-    // read or request window state. `SetForegroundWindow` reports whether it was
-    // granted, which the read after it answers directly instead: the window can be
-    // handed the foreground and lose it again in the same breath.
-    unsafe {
-        if IsWindowVisible(hwnd) == 0 {
-            FOREGROUND_TAKEN.store(false, Ordering::Release);
-            return;
-        }
-        if FOREGROUND_TAKEN.load(Ordering::Acquire) {
-            return;
-        }
-        SetForegroundWindow(hwnd);
-        if GetForegroundWindow() == hwnd {
-            FOREGROUND_TAKEN.store(true, Ordering::Release);
-        }
-    }
 }
 
 /// Put a window's frame at `position` with a client area of `inner_size`, both in
@@ -919,8 +866,9 @@ pub fn restore_after_prompt(hwnd: HWND) {
     }
     // SAFETY: `hwnd` is the window the dialog was owned by. Both calls only request
     // window state; `SetForegroundWindow` reports whether it was granted, which the
-    // read after it answers directly (as in `take_foreground`), and SetWindowPos's
-    // NOMOVE/NOSIZE make its position and size arguments unused.
+    // read after it answers directly (the window can be handed the foreground and
+    // lose it again in the same breath), and SetWindowPos's NOMOVE/NOSIZE make its
+    // position and size arguments unused.
     unsafe {
         SetForegroundWindow(hwnd);
         if GetForegroundWindow() != hwnd {
@@ -1717,19 +1665,21 @@ mod tests {
         );
     }
 
-    // The three appearances a maximized launch makes, in the order it makes them: the
-    // maximize that puts the window up before tao has asked for it to be visible, the
-    // restore behind it, and the maximize that is the one to keep. Only the last is a
-    // rectangle the window is meant to be seen on AND the end of the sequence, which is
-    // what the count separates it by - the first lands on the same rectangle.
+    // The shows a maximized launch makes, in the order it makes them: the one at the
+    // restored size as the window is created, the maximize, and the re-show on the
+    // maximized window. Only the first is a rectangle the window is not meant to be
+    // seen on.
     #[test]
-    fn a_maximized_launch_is_shown_on_its_last_appearance_alone() {
+    fn a_maximized_launch_is_first_seen_maximized() {
         assert!(
-            holds_the_show_back(true, 0),
-            "the maximize tao takes straight back down"
+            holds_the_show_back(false, 0),
+            "the restored show the maximize is about to replace"
         );
-        assert!(holds_the_show_back(false, 1), "the restore behind it");
-        assert!(!holds_the_show_back(true, 2), "the maximize that stays");
+        assert!(!holds_the_show_back(true, 1), "the maximize");
+        assert!(
+            !holds_the_show_back(true, 1),
+            "the re-show on the maximized window"
+        );
     }
 
     // Past the allowance the window goes up whatever the show looks like: being wrong
@@ -1742,10 +1692,10 @@ mod tests {
     }
 
     // The hook outlives what it watches for, so the build is what takes it out - for a
-    // launch that had nothing to place as much as for one that did, since the
-    // activation it also carries belongs to every launch. What it does while installed
-    // is Win32 message ordering that only a real window can exercise; this covers the
-    // lifetime around it.
+    // launch that had nothing to place as much as for one that did, since the icons it
+    // also carries belong to every launch. What it does while installed is Win32
+    // message ordering that only a real window can exercise; this covers the lifetime
+    // around it.
     // One test for the whole lifetime, since what it covers is process-global: a
     // second test running beside it would be preparing and finishing the same
     // creation.
@@ -1755,7 +1705,7 @@ mod tests {
         assert_ne!(
             CREATION_HOOK.load(Ordering::Acquire),
             0,
-            "a launch with no remembered rectangle still needs the hook for the activation"
+            "a launch with no remembered rectangle still needs the hook for the icons"
         );
         assert!(
             !PENDING_MAXIMIZED.load(Ordering::Acquire),

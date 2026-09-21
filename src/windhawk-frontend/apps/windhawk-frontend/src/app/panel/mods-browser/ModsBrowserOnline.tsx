@@ -1,7 +1,7 @@
 /// #if WEBSITE
 import { ModsBrowserOnlineWebsite } from './ModsBrowserOnline.Website';
 /// #else
-import { ModsBrowserOnlineExtension } from './ModsBrowserOnline.Extension';
+import { ModsBrowserOnlineApp } from './ModsBrowserOnline.App';
 /// #endif
 
 interface Props {
@@ -15,7 +15,7 @@ declare const WEBPACK_IS_WEBSITE: boolean;
 function ModsBrowserOnline(props: Props) {
   return WEBPACK_IS_WEBSITE
     ? <ModsBrowserOnlineWebsite {...props} />
-    : <ModsBrowserOnlineExtension {...props} />;
+    : <ModsBrowserOnlineApp {...props} />;
 }
 
 export default ModsBrowserOnline;

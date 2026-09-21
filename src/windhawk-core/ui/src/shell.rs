@@ -69,8 +69,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use tauri::webview::{Color, NewWindowResponse};
-use tauri::{AppHandle, Url, WebviewWindow, Wry};
+use tauri::{AppHandle, Url, WebviewWindow};
 use tauri_plugin_opener::OpenerExt;
+use tauri_runtime_wry::WebviewWryExt;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND, COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SEPARATOR,
     COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN, COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN,
@@ -474,14 +475,16 @@ unsafe fn set_dwm_attribute<T>(hwnd: HWND, attribute: DWMWINDOWATTRIBUTE, value:
 
 /// Give the main window crisp icons sized for its current DPI.
 ///
-/// tao sets the window's small (title-bar) icon from a single RGBA image Tauri
-/// decodes from the FIRST entry of `icon.ico` - the 256x256 one - so Windows squeezes
-/// a 256px bitmap into the ~16px caption slot and the title-bar icon looks blurry.
-/// The same `icon.ico` is also embedded in the executable as a multi-resolution icon
-/// group (by `tauri-build`, resource id 32512) carrying 16/24/32/48/64/256 px images;
+/// tao sets the window's small (title-bar) icon from a single RGBA image, which Tauri
+/// renders at startup from the executable's icon resource at the SYSTEM large-icon
+/// metric (`SM_CXICON`: 32px at 96 DPI, scaled for the primary display), so Windows
+/// squeezes that bitmap into the ~16px caption slot, and a window on a display of
+/// another DPI gets the primary's size.
+/// The `icon.ico` behind that resource (embedded by `tauri-build`, resource id 32512)
+/// is a multi-resolution icon group carrying 16/24/32/48/64/256 px images;
 /// `LoadIconWithScaleDown` picks the entry nearest a requested size and scales it down
-/// with high quality. Loading at the DPI's small- and large-icon metrics therefore
-/// yields the native 16/24/32... rather than a downscaled 256, set as the window's
+/// with high quality. Loading at this window's DPI's small- and large-icon metrics
+/// therefore yields the native 16/24/32... for each slot, set as the window's
 /// ICON_SMALL (caption, taskbar) and ICON_BIG (alt-tab).
 ///
 /// The icons go on as the window is shown, from the creation hook
@@ -648,11 +651,11 @@ pub fn scrollbar_init_script() -> &'static str {
 /// those keys we keep. (Ctrl+0 stays a zoom key, but is served by
 /// [`apply_and_track_zoom`] rather than by WebView2.)
 ///
-/// Best effort: `with_webview` runs the closure once the platform webview is available,
+/// Best effort: `with_wry_webview` runs the closure once the platform webview is available,
 /// and a failure to reach it just leaves the WebView2 defaults in place. The handler
 /// lives for the window's lifetime (the app has a single window, open until exit).
 pub fn disable_browser_shortcuts(window: &WebviewWindow) {
-    let _ = window.with_webview(|webview| {
+    let _ = window.with_wry_webview(|webview| {
         let controller = webview.controller();
         let handler = AcceleratorKeyPressedEventHandler::create(Box::new(
             move |_controller: Option<ICoreWebView2Controller>,
@@ -723,12 +726,12 @@ fn ctrl_down() -> bool {
 /// back/forward; the editable-field menu keeps its
 /// cut/copy/paste/undo/redo/select-all.
 ///
-/// Best effort, mirroring [`disable_browser_shortcuts`]: `with_webview` runs the closure
+/// Best effort, mirroring [`disable_browser_shortcuts`]: `with_wry_webview` runs the closure
 /// once the platform webview is available, and a failure to reach it leaves the default
 /// menu in place. The handler lives for the window's lifetime (single window, open until
 /// exit), so the registration cookie is intentionally discarded.
 pub fn customize_context_menu(window: &WebviewWindow) {
-    let _ = window.with_webview(|webview| {
+    let _ = window.with_wry_webview(|webview| {
         let controller = webview.controller();
         // SAFETY: `controller` is the live WebView2 controller from Tauri; CoreWebView2
         // writes the core object through an out-pointer and returns an error rather than
@@ -779,12 +782,12 @@ pub fn customize_context_menu(window: &WebviewWindow) {
 /// dialog rather than answered here. Other permission kinds - camera, microphone,
 /// geolocation - are left alone entirely, which keeps them prompting.
 ///
-/// Best effort, mirroring [`customize_context_menu`]: `with_webview` runs the closure
+/// Best effort, mirroring [`customize_context_menu`]: `with_wry_webview` runs the closure
 /// once the platform webview is available, and a failure to reach it leaves the dialog in
 /// place. The handler lives for the window's lifetime (single window, open until exit),
 /// so the registration cookie is intentionally discarded.
 pub fn allow_clipboard_access(window: &WebviewWindow) {
-    let _ = window.with_webview(|webview| {
+    let _ = window.with_wry_webview(|webview| {
         let controller = webview.controller();
         // SAFETY: `controller` is the live WebView2 controller from Tauri; CoreWebView2
         // writes the core object through an out-pointer and returns an error rather than
@@ -844,13 +847,13 @@ fn requesting_origin_is_ours(uri: &str) -> bool {
 /// content theme keeps them in step with the injected `color-scheme`. Called at startup
 /// and again whenever the theme setting changes at runtime.
 ///
-/// Best effort, mirroring [`customize_context_menu`]: `with_webview` runs the closure
+/// Best effort, mirroring [`customize_context_menu`]: `with_wry_webview` runs the closure
 /// once the platform webview is available, and any failure to reach the profile (a
 /// runtime predating `ICoreWebView2_13` has none) leaves the auto scheme in place.
 pub fn apply_webview_color_scheme(window: &WebviewWindow, setting: ThemeSetting) {
-    // `move` so the closure owns the `setting` copy: `with_webview` requires a `'static`
+    // `move` so the closure owns the `setting` copy: `with_wry_webview` requires a `'static`
     // callback, which cannot borrow a local.
-    let _ = window.with_webview(move |webview| {
+    let _ = window.with_wry_webview(move |webview| {
         let controller = webview.controller();
         // SAFETY: `controller` is the live WebView2 controller from Tauri; CoreWebView2
         // writes the core object through an out-pointer and returns an error rather than
@@ -892,7 +895,7 @@ pub fn apply_webview_color_scheme(window: &WebviewWindow, setting: ThemeSetting)
 /// controller leaves the webview as it is - visible, which is the pre-splash
 /// behavior.
 pub fn set_webview_visible(window: &WebviewWindow, visible: bool) {
-    let _ = window.with_webview(move |webview| {
+    let _ = window.with_wry_webview(move |webview| {
         let controller = webview.controller();
         // SAFETY: `controller` is the live WebView2 controller from Tauri;
         // SetIsVisible takes the flag by value and returns an error rather than
@@ -905,18 +908,19 @@ pub fn set_webview_visible(window: &WebviewWindow, visible: bool) {
 
 /// Move the keyboard focus into the webview, so what the user types reaches the page.
 ///
-/// The window is activated as it is shown, before there is a webview to hand the focus
-/// to, and the webview is built unfocused (`run`, where the reason is written down).
-/// wry moves the focus in on every later `WM_SETFOCUS`, but the window is already the
-/// focused one by then, so the startup has no `WM_SETFOCUS` to ride: without this call
-/// the focus would sit on the window itself, which swallows the keyboard, until the
-/// user clicked into the page or switched away and back.
+/// wry moves the focus in as it finishes building the webview, and again on every
+/// later `WM_SETFOCUS` the window gets. The startup cannot rely on either: the webview
+/// is hidden behind the splash the moment it is built and shown again only once the
+/// page has rendered, by which time the window has long been the focused one, so no
+/// `WM_SETFOCUS` is coming. Without this call the focus would sit on the window itself,
+/// which swallows the keyboard, until the user clicked into the page or switched away
+/// and back.
 ///
 /// Best effort, mirroring [`set_webview_visible`]: WebView2 refuses the move for a
 /// window that cannot take focus, which leaves the page unfocused until the user's
 /// first click or switch-back brings wry's own call.
 pub fn focus_webview(window: &WebviewWindow) {
-    let _ = window.with_webview(|webview| {
+    let _ = window.with_wry_webview(|webview| {
         let controller = webview.controller();
         // SAFETY: `controller` is the live WebView2 controller from Tauri; MoveFocus
         // takes the reason by value and returns an error rather than misbehaving.
@@ -950,7 +954,7 @@ const UNZOOMED: f64 = 1.0;
 /// factor outside its supported range), which is why neither this reset nor the startup
 /// restore comes back through the subscription on its own.
 ///
-/// Best effort, mirroring [`disable_browser_shortcuts`]: `with_webview` runs the
+/// Best effort, mirroring [`disable_browser_shortcuts`]: `with_wry_webview` runs the
 /// closure once the platform webview is available, and a failure to reach it leaves
 /// the content unzoomed and untracked. Both subscriptions live for the window's
 /// lifetime (single window, open until exit), so their cookies are intentionally
@@ -959,7 +963,7 @@ pub fn apply_and_track_zoom<F>(window: &WebviewWindow, zoom: f64, on_change: F)
 where
     F: Fn(f64) + Send + Sync + 'static,
 {
-    let _ = window.with_webview(move |webview| {
+    let _ = window.with_wry_webview(move |webview| {
         let controller = webview.controller();
 
         // SAFETY: `controller` is the live WebView2 controller from Tauri;
@@ -1301,7 +1305,7 @@ pub fn handle_navigation(app: &AppHandle, url: &Url) -> bool {
 /// request with no handler registered). The deny is unconditional because the app has a
 /// single window: an in-app `window.open` has no more business spawning a second webview
 /// than an external link has opening inside this one.
-pub fn handle_new_window(app: &AppHandle, url: &Url) -> NewWindowResponse<Wry> {
+pub fn handle_new_window(app: &AppHandle, url: &Url) -> NewWindowResponse<tauri::DynRuntime> {
     if is_external(url) {
         open_externally(app, url);
     }

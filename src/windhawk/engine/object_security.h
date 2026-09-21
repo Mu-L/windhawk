@@ -34,14 +34,4 @@ DWORD EnsureRegistryKeyDaclContainsAces(HKEY hKey,
                                         const DaclAce* aces,
                                         size_t aceCount);
 
-// Idempotently ensures the file or directory carries no mandatory label, so it
-// counts as medium integrity the way an unlabeled object does. Makes no change
-// when there is none. Clearing an inheritable label reaches the objects already
-// under a directory too, not only ones created later. Returns a Win32 error
-// code (ERROR_SUCCESS on success or when nothing needed to change).
-DWORD EnsureFileHasNoMandatoryLabel(PCWSTR path);
-
-// Same as above for an existing registry key in the 64-bit view.
-DWORD EnsureRegistryKeyHasNoMandatoryLabel(HKEY hKey, PCWSTR subKey);
-
 }  // namespace Functions

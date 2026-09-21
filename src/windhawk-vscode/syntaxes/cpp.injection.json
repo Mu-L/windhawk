@@ -82,9 +82,27 @@
             "contentName": "meta.embedded.block.yaml",
             "patterns": [
                 {
+                    "include": "#yaml-settings-marker"
+                },
+                {
                     "include": "source.yaml"
                 }
             ]
+        },
+        "yaml-settings-marker": {
+            "match": "^([ \t]*)(#! )(.*)$",
+            "captures": {
+                "2": {
+                    "name": "keyword.other.windhawk-settings-marker"
+                },
+                "3": {
+                    "patterns": [
+                        {
+                            "include": "source.yaml"
+                        }
+                    ]
+                }
+            }
         },
         "markdown-readme-wrapper": {
             "name": "text.markdown.windhawk-readme-wrapper",

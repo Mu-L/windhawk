@@ -223,6 +223,30 @@ mod tests {
     }
 
     #[test]
+    fn float_settings_resolve_as_strings() {
+        // A `$float` value is a string setting from the parse onward, so the
+        // export types it as text with no float arm here.
+        let items = parse(
+            "- opacity: 0.85
+  $float: true
+- weights: [1, 2.5]
+  $float: true",
+        );
+        assert_eq!(
+            resolve_flat_setting_type(&items, "opacity"),
+            Some(FlatSettingType::String)
+        );
+        assert_eq!(
+            resolve_flat_setting_type(&items, "weights[1]"),
+            Some(FlatSettingType::String)
+        );
+        assert_eq!(
+            resolve_flat_setting_type(&items, "weights[7]"),
+            Some(FlatSettingType::String)
+        );
+    }
+
+    #[test]
     fn resolves_nested_group_children() {
         let items = parse("- group:\n  - inner: true\n  - label: hi");
         assert_eq!(

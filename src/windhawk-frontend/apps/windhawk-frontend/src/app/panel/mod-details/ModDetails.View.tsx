@@ -1,36 +1,49 @@
+import { AppUISettingsContext } from '@app/appUISettings';
 import { isLocalModId, readStoredValue, writeStoredValue } from '@app/utils';
 import type { GetModSourceDataReplyData, ModMetadata, RepositoryDetails } from '@app/webviewIPCMessages';
 import { Badge, Button, Card, Radio, Result, Spin, Tooltip } from 'antd';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import styled, { css } from 'styled-components';
 import { compareToRepository } from '../shared/updateOffer';
-import ModDetailsHeader, { type ExtensionHeaderProps } from './ModDetailsHeader';
+import ModDetailsHeader, { type ModDetailsHeaderAppProps } from './ModDetailsHeader';
 import type { ModDetailsState, ShownVersion } from './modDetailsState';
 import ModDetailsChangelog from './tabs/ModDetailsChangelog';
 import ModDetailsReadme from './tabs/ModDetailsReadme';
 import ModDetailsSettings from './tabs/settings';
 import ModDetailsSource from './tabs/ModDetailsSource';
-/// #if EXTENSION
+/// #if APP
 import ModDetailsAdvanced from './tabs/ModDetailsAdvanced';
 import ModDetailsSourceDiff from './tabs/ModDetailsSourceDiff';
 import { VersionSelectorModal } from './VersionSelectorModal';
 /// #endif
 
-declare const WEBPACK_IS_WEBSITE: boolean;
+declare const WEBPACK_IS_APP: boolean;
 
 const ModDetailsContainer = styled.div`
   flex: 1;
   padding-top: 20px;
 `;
 
-const ModDetailsCard = styled(Card)`
+const ModDetailsCard = styled(Card)<{ $clearsCreateButton: boolean }>`
   min-height: 100%;
-  ${!WEBPACK_IS_WEBSITE && css`
+  ${WEBPACK_IS_APP && css`
     border-bottom: none;
     border-bottom-left-radius: 0;
     border-bottom-right-radius: 0;
   `}
+
+  // The list this screen opened from keeps its create-a-new-mod button pinned
+  // over the bottom of the panel, so a tab long enough to scroll ends as far
+  // above the bottom as the list's last row does. The card's own body only: the
+  // settings tab draws cards of its own inside it.
+  ${({ $clearsCreateButton }) =>
+    $clearsCreateButton &&
+    css`
+      > .ant-card-body {
+        padding-bottom: 70px;
+      }
+    `}
 `;
 
 const ModVersionRadioGroup = styled(Radio.Group)`
@@ -308,13 +321,13 @@ function ModDetailsTabContent(props: ModDetailsTabContentProps) {
     );
   }
 
-  /// #if EXTENSION
+  /// #if APP
   if (activeTab === 'advanced') {
     return <ModDetailsAdvanced modId={modId} />;
   }
   /// #endif
 
-  /// #if EXTENSION
+  /// #if APP
   if (activeTab === 'changes') {
     // Both sides are here: the checks above waited for each and reported the one
     // that failed.
@@ -347,13 +360,13 @@ export interface ModDetailsViewProps {
   // Source data for current view
   modSourceData: ModSourceData | null;
 
-  // For changes tab (extension mode only)
+  // For changes tab (app build only)
   installedModSourceData?: ModSourceData | null;
   selectedModSourceData?: ModSourceData | null;
 
-  // Extension-specific props: what the header renders, plus what the tabs and
+  // App-specific props: what the header renders, plus what the tabs and
   // the version selector need on top of it.
-  extensionViewProps?: ExtensionHeaderProps & {
+  appViewProps?: ModDetailsHeaderAppProps & {
     // Whether the tab on screen outlives the screen itself, for an owner whose
     // screen is drawn from scratch again on its own rather than at a reader's
     // request. Where it is not, opening the mod starts at its details.
@@ -382,14 +395,21 @@ export function ModDetailsView(props: ModDetailsViewProps) {
     modSourceData,
     installedModSourceData = null,
     selectedModSourceData = null,
-    extensionViewProps,
+    appViewProps,
     onRetryLoad,
   } = props;
 
   const isLocalMod = isLocalModId(modId);
 
+  // The button belongs to the list behind this screen, and only the app
+  // draws one: a screen with nothing behind it - the editor's preview - has none
+  // to clear, and neither does a reader who has hidden the development options.
+  const { devModeOptOut } = useContext(AppUISettingsContext);
+  const clearsCreateButton =
+    !!appViewProps && !!goBack && !devModeOptOut;
+
   // Internal UI state
-  const remembersActiveTab = !!extensionViewProps?.remembersActiveTab;
+  const remembersActiveTab = !!appViewProps?.remembersActiveTab;
   // The tab a mod opens on: the one this screen was left on where that outlives
   // the screen, and the mod's details otherwise.
   const openingTab = () =>
@@ -413,8 +433,8 @@ export function ModDetailsView(props: ModDetailsViewProps) {
 
   const handleVersionSelect = useCallback((version: string, timestamps: Record<string, number>) => {
     setIsVersionModalOpen(false);
-    extensionViewProps?.onVersionSelect(version, timestamps);
-  }, [extensionViewProps]);
+    appViewProps?.onVersionSelect(version, timestamps);
+  }, [appViewProps]);
 
   const handleVersionModalCancel = useCallback(() => {
     setIsVersionModalOpen(false);
@@ -436,7 +456,7 @@ export function ModDetailsView(props: ModDetailsViewProps) {
   }, [remembersActiveTab]);
 
   // The website build shows the repository's mod and nothing of a machine.
-  const state: ModDetailsState = extensionViewProps?.state ?? {
+  const state: ModDetailsState = appViewProps?.state ?? {
     installed: null,
     shown: { kind: 'latest' },
   };
@@ -483,7 +503,7 @@ export function ModDetailsView(props: ModDetailsViewProps) {
   // holding off - which is the one a reader weighing whether to take the refusal
   // back is deciding about, and so the one it is worth most reading there. A
   // refusal with no version behind it has nothing to diff.
-  const offerAction = extensionViewProps?.headerActions?.actions.offer;
+  const offerAction = appViewProps?.headerActions?.actions.offer;
   if (
     offerAction?.kind === 'update' ||
     (offerAction?.kind === 'allow-updates' && offerAction.refusedVersion)
@@ -510,12 +530,12 @@ export function ModDetailsView(props: ModDetailsViewProps) {
 
   // The version list leads to installing or moving to the version it picks, and
   // a screen with neither wired has nothing to pick one for.
-  const versionSelectorNode = extensionViewProps?.headerActions && (
+  const versionSelectorNode = appViewProps?.headerActions && (
     <ModVersionSelector
       isLocalMod={isLocalMod}
       state={state}
-      repository={extensionViewProps.repositoryStatus}
-      onShowVersion={extensionViewProps.onShowVersion}
+      repository={appViewProps.repositoryStatus}
+      onShowVersion={appViewProps.onShowVersion}
       onOpenVersionModal={handleOpenVersionModal}
     />
   );
@@ -529,11 +549,12 @@ export function ModDetailsView(props: ModDetailsViewProps) {
       ? shown.version
       : shown.kind === 'installed'
         ? installed?.metadata?.version
-        : extensionViewProps?.repositoryStatus?.version;
+        : appViewProps?.repositoryStatus?.version;
 
   return (
     <ModDetailsContainer data-testid="mod-details" data-mod-id={modId}>
       <ModDetailsCard
+        $clearsCreateButton={clearsCreateButton}
         title={
           <ModDetailsHeader
             topNode={versionSelectorNode}
@@ -542,7 +563,7 @@ export function ModDetailsView(props: ModDetailsViewProps) {
             state={state}
             repositoryDetails={repositoryDetails}
             goBack={goBack}
-            extensionHeaderProps={extensionViewProps}
+            appHeaderProps={appViewProps}
           />
         }
         tabList={tabList}
@@ -569,9 +590,9 @@ export function ModDetailsView(props: ModDetailsViewProps) {
         />
       </ModDetailsCard>
       {
-        /// #if EXTENSION
+        /// #if APP
         // Opened from the version list, which is drawn on the same terms.
-        extensionViewProps?.headerActions && (
+        appViewProps?.headerActions && (
           <VersionSelectorModal
             modId={modId}
             open={isVersionModalOpen}

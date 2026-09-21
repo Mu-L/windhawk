@@ -55,6 +55,12 @@ pub enum CoreErrorKind {
     #[error("an update is already in progress")]
     UpdateInProgress,
     #[error("{message}")]
+    HotkeyCaptureUnavailable {
+        message: String,
+        /// See `IoFailed::os_error`.
+        os_error: Option<NonZeroU32>,
+    },
+    #[error("{message}")]
     IoFailed {
         message: String,
         path: String,
@@ -89,6 +95,7 @@ impl CoreErrorKind {
             Self::RestartRequired { .. } => ErrorCode::RestartRequired,
             Self::Canceled => ErrorCode::Canceled,
             Self::UpdateInProgress => ErrorCode::UpdateInProgress,
+            Self::HotkeyCaptureUnavailable { .. } => ErrorCode::HotkeyCaptureUnavailable,
             Self::IoFailed { .. } => ErrorCode::IoFailed,
             Self::RegistryFailed { .. } => ErrorCode::RegistryFailed,
             Self::Internal { .. } => ErrorCode::Internal,
@@ -117,6 +124,7 @@ impl CoreErrorKind {
                 "stdout": stdout,
                 "stderr": stderr,
             })),
+            Self::HotkeyCaptureUnavailable { os_error, .. } => Some(json!({ "osError": os_error })),
             Self::IoFailed { path, os_error, .. } => {
                 Some(json!({ "path": path, "osError": os_error }))
             }
@@ -261,6 +269,20 @@ impl CoreError {
     #[track_caller]
     pub fn update_in_progress() -> CoreError {
         Self::with_location(CoreErrorKind::UpdateInProgress, Location::caller())
+    }
+
+    #[track_caller]
+    pub fn hotkey_capture_unavailable(
+        message: impl Into<String>,
+        os_error: Option<NonZeroU32>,
+    ) -> CoreError {
+        Self::with_location(
+            CoreErrorKind::HotkeyCaptureUnavailable {
+                message: message.into(),
+                os_error,
+            },
+            Location::caller(),
+        )
     }
 
     #[track_caller]

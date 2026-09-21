@@ -2,6 +2,7 @@
 
 #include "main_window.h"
 
+#include "dark_mode.h"
 #include "functions.h"
 #include "logger.h"
 #include "resource.h"
@@ -1006,6 +1007,10 @@ void CMainWindow::StopService(HWND hWnd) {
                 }
                 break;
             }
+
+            case TDN_CREATED:
+                DarkMode::ApplyToTaskDialog(hWnd);
+                break;
 
             case TDN_VERIFICATION_CLICKED:
                 callbackState.verificationChecked =

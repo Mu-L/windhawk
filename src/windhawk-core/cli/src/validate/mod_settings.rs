@@ -11,7 +11,10 @@
 //! authoritative shape at every index. [`flatten_setting_key_types`] enumerates
 //! that first-group template for the "valid keys" hint shown when a key does not
 //! resolve. Both keep the boolean-vs-number distinction the engine's own
-//! flattening drops, so `set` can type-check input before it writes.
+//! flattening drops, the `$float` flag the item carries (a decimal held as a
+//! string, which the engine cannot tell from any other string), and the
+//! `$min` / `$max` bounds of a number item, so `set` can type-check and
+//! range-check input before it writes.
 
 use std::collections::BTreeMap;
 
@@ -22,12 +25,82 @@ use crate::error::CliError;
 use crate::validate::int_range::parse_int32_setting;
 
 /// A flattened setting leaf's declared scalar type. The distinction drives input
-/// validation in [`parse_setting_input`].
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// validation in [`parse_setting_input`]. The number kinds carry the item's
+/// `$min` / `$max` bounds (an `f64` inside, so the enum is `PartialEq` and not
+/// `Eq`).
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum SettingLeafType {
     Boolean,
-    Number,
+    Number(Bounds),
     String,
+    /// A `$float` setting: stored as a string, but only decimal text is valid.
+    Float(Bounds),
+}
+
+/// The declared `$min` / `$max` of a number item, each absent when the item
+/// declares none. Compared as `f64` on both kinds: an int32 is exact in one,
+/// and a `$float` bound parsed from the same text as the input compares the
+/// same way everywhere.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct Bounds {
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+}
+
+impl Bounds {
+    fn of(item: &InitialSettingItem) -> Bounds {
+        Bounds {
+            min: item.min.as_ref().and_then(serde_json::Number::as_f64),
+            max: item.max.as_ref().and_then(serde_json::Number::as_f64),
+        }
+    }
+
+    /// The range as the valid-keys hint spells it beside the type: `1..5`,
+    /// `0.5..`, `..10`; empty when unbounded.
+    fn describe(self) -> String {
+        match (self.min, self.max) {
+            (None, None) => String::new(),
+            (min, max) => format!(
+                " {}..{}",
+                min.map(number_text).unwrap_or_default(),
+                max.map(number_text).unwrap_or_default()
+            ),
+        }
+    }
+}
+
+/// A bound's text: the shortest decimal that round-trips it, the spelling a
+/// `$float` value is held in (`1`, `0.5`).
+fn number_text(value: f64) -> String {
+    value.to_string()
+}
+
+impl SettingLeafType {
+    /// The type as the valid-keys hint names it, with the range where the item
+    /// declares one: `boolean`, `number 1..5`, `string`, `float 0.5..`.
+    pub fn describe(self) -> String {
+        match self {
+            SettingLeafType::Boolean => "boolean".to_owned(),
+            SettingLeafType::Number(bounds) => format!("number{}", bounds.describe()),
+            SettingLeafType::String => "string".to_owned(),
+            SettingLeafType::Float(bounds) => format!("float{}", bounds.describe()),
+        }
+    }
+}
+
+/// The leaf type of a string-valued item: `Float` when the item carries the
+/// `$float` flag (the value's text is a decimal), `String` otherwise.
+fn string_leaf_type(item: &InitialSettingItem) -> SettingLeafType {
+    if item.float {
+        SettingLeafType::Float(Bounds::of(item))
+    } else {
+        SettingLeafType::String
+    }
+}
+
+/// The leaf type of a number-valued item, carrying its bounds.
+fn number_leaf_type(item: &InitialSettingItem) -> SettingLeafType {
+    SettingLeafType::Number(Bounds::of(item))
 }
 
 /// Flatten a mod's declared initial settings into a `{ flat-key -> leaf type }`
@@ -50,35 +123,35 @@ fn flatten_items(
         } else {
             format!("{prefix}.{}", item.key)
         };
-        flatten_value(&item.value, &key, out);
+        flatten_value(item, &key, out);
     }
 }
 
 fn flatten_value(
-    value: &InitialSettingsValue,
+    item: &InitialSettingItem,
     key: &str,
     out: &mut BTreeMap<String, SettingLeafType>,
 ) {
-    match value {
+    match &item.value {
         InitialSettingsValue::Bool(_) => {
             out.insert(key.to_owned(), SettingLeafType::Boolean);
         }
         InitialSettingsValue::Number(_) => {
-            out.insert(key.to_owned(), SettingLeafType::Number);
+            out.insert(key.to_owned(), number_leaf_type(item));
         }
         InitialSettingsValue::String(_) => {
-            out.insert(key.to_owned(), SettingLeafType::String);
+            out.insert(key.to_owned(), string_leaf_type(item));
         }
         // Scalar arrays: each index is a leaf of the element type (an empty array
         // carries no type info, so it contributes no keys).
         InitialSettingsValue::NumberArray(items) => {
             for i in 0..items.len() {
-                out.insert(format!("{key}[{i}]"), SettingLeafType::Number);
+                out.insert(format!("{key}[{i}]"), number_leaf_type(item));
             }
         }
         InitialSettingsValue::StringArray(items) => {
             for i in 0..items.len() {
-                out.insert(format!("{key}[{i}]"), SettingLeafType::String);
+                out.insert(format!("{key}[{i}]"), string_leaf_type(item));
             }
         }
         // A nested object: its leaves live at the current key's namespace.
@@ -126,17 +199,17 @@ pub fn resolve_setting_key_type(settings: &InitialSettings, key: &str) -> Option
                 return (is_last && index.is_none()).then_some(SettingLeafType::Boolean);
             }
             InitialSettingsValue::Number(_) => {
-                return (is_last && index.is_none()).then_some(SettingLeafType::Number);
+                return (is_last && index.is_none()).then_some(number_leaf_type(item));
             }
             InitialSettingsValue::String(_) => {
-                return (is_last && index.is_none()).then_some(SettingLeafType::String);
+                return (is_last && index.is_none()).then_some(string_leaf_type(item));
             }
             // Scalar arrays: `key[i]` is a leaf of the element type for any `i`.
             InitialSettingsValue::NumberArray(_) => {
-                return (is_last && index.is_some()).then_some(SettingLeafType::Number);
+                return (is_last && index.is_some()).then_some(number_leaf_type(item));
             }
             InitialSettingsValue::StringArray(_) => {
-                return (is_last && index.is_some()).then_some(SettingLeafType::String);
+                return (is_last && index.is_some()).then_some(string_leaf_type(item));
             }
             // Nested object: no index; descend into its group for the rest.
             InitialSettingsValue::Settings(inner) => {
@@ -182,7 +255,10 @@ fn parse_segment(segment: &str) -> Option<(&str, Option<usize>)> {
 /// Parse a raw CLI string into the JSON value to store for a setting of the
 /// declared `ty` (the TS `parseSettingInput`). A boolean is normalized to the
 /// number `1`/`0` the engine stores; a number is range-checked; a string is
-/// stored verbatim.
+/// stored verbatim; a float must be finite decimal text and is stored as the
+/// shortest text that round-trips it (`1.0` stores `1`), the same rendering
+/// the core gives a `$float` default. A number of either kind is then held to
+/// the item's `$min` / `$max`.
 #[track_caller]
 pub fn parse_setting_input(key: &str, ty: SettingLeafType, raw: &str) -> Result<Value, CliError> {
     match ty {
@@ -193,14 +269,59 @@ pub fn parse_setting_input(key: &str, ty: SettingLeafType, raw: &str) -> Result<
                 "Setting '{key}' is declared as boolean; value must be one of true/false/1/0, got '{raw}'."
             ))),
         },
-        SettingLeafType::Number => Ok(json!(parse_int32_setting(key, raw)?)),
+        SettingLeafType::Number(bounds) => {
+            let n = parse_int32_setting(key, raw)?;
+            // An i64 in the int32 range is exact as an f64.
+            check_bounds(key, raw, n as f64, bounds)?;
+            Ok(json!(n))
+        }
         SettingLeafType::String => Ok(Value::String(raw.to_owned())),
+        SettingLeafType::Float(bounds) => match raw.parse::<f64>() {
+            Ok(v) if v.is_finite() => {
+                check_bounds(key, raw, v, bounds)?;
+                Ok(Value::String(v.to_string()))
+            }
+            _ => Err(CliError::usage(format!(
+                "Setting '{key}' is declared as a decimal number; got '{raw}'."
+            ))),
+        },
     }
+}
+
+/// Refuse a parsed number outside the item's declared bounds (usage error,
+/// exit 2), naming the side it crossed or the whole range when both are set.
+#[track_caller]
+fn check_bounds(key: &str, raw: &str, value: f64, bounds: Bounds) -> Result<(), CliError> {
+    let below = bounds.min.is_some_and(|min| value < min);
+    let above = bounds.max.is_some_and(|max| value > max);
+    if !below && !above {
+        return Ok(());
+    }
+    let range = match (bounds.min, bounds.max) {
+        (Some(min), Some(max)) => {
+            format!("between {} and {}", number_text(min), number_text(max))
+        }
+        (Some(min), None) => format!("at least {}", number_text(min)),
+        (None, Some(max)) => format!("at most {}", number_text(max)),
+        (None, None) => unreachable!("a value cannot cross an absent bound"),
+    };
+    Err(CliError::usage(format!(
+        "Setting '{key}' must be {range}, got '{raw}'."
+    )))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const UNBOUNDED_NUMBER: SettingLeafType = SettingLeafType::Number(Bounds {
+        min: None,
+        max: None,
+    });
+    const UNBOUNDED_FLOAT: SettingLeafType = SettingLeafType::Float(Bounds {
+        min: None,
+        max: None,
+    });
 
     fn parse(source: &str) -> InitialSettings {
         serde_json::from_str(source).expect("parse initial settings")
@@ -223,12 +344,93 @@ mod tests {
         let flat = flatten_setting_key_types(&settings);
 
         assert_eq!(flat["flag"], SettingLeafType::Boolean);
-        assert_eq!(flat["count"], SettingLeafType::Number);
+        assert_eq!(flat["count"], UNBOUNDED_NUMBER);
         assert_eq!(flat["label"], SettingLeafType::String);
         assert_eq!(flat["names[0]"], SettingLeafType::String);
         assert_eq!(flat["names[1]"], SettingLeafType::String);
-        assert_eq!(flat["group.inner"], SettingLeafType::Number);
+        assert_eq!(flat["group.inner"], UNBOUNDED_NUMBER);
         assert_eq!(flat["items[0].name"], SettingLeafType::String);
+    }
+
+    #[test]
+    fn float_items_flatten_and_resolve_as_float_leaves() {
+        // The flag lives on the ITEM, so a `$float` string scalar and each
+        // element of a `$float` string array are `Float` leaves, while an
+        // unflagged string stays `String`. An object array's rows resolve
+        // against the template group's items, which carry the flag.
+        let settings = parse(
+            r#"[
+                {"key": "opacity", "value": "0.85", "float": true},
+                {"key": "weights", "value": ["0.25", "1"], "float": true},
+                {"key": "label", "value": "hi"},
+                {"key": "rows", "value": [[{"key": "scale", "value": "1", "float": true}]]}
+            ]"#,
+        );
+        let flat = flatten_setting_key_types(&settings);
+        assert_eq!(flat["opacity"], UNBOUNDED_FLOAT);
+        assert_eq!(flat["weights[0]"], UNBOUNDED_FLOAT);
+        assert_eq!(flat["weights[1]"], UNBOUNDED_FLOAT);
+        assert_eq!(flat["label"], SettingLeafType::String);
+        assert_eq!(flat["rows[0].scale"], UNBOUNDED_FLOAT);
+
+        let r = |k: &str| resolve_setting_key_type(&settings, k);
+        assert_eq!(r("opacity"), Some(UNBOUNDED_FLOAT));
+        assert_eq!(r("weights[9]"), Some(UNBOUNDED_FLOAT));
+        assert_eq!(r("label"), Some(SettingLeafType::String));
+        assert_eq!(r("rows[3].scale"), Some(UNBOUNDED_FLOAT));
+    }
+
+    #[test]
+    fn bounded_items_flatten_and_resolve_with_their_bounds() {
+        // The bounds live on the ITEM like the float flag: a scalar, each
+        // element of an array, and an object array's rows through the template
+        // group carry them; an item without them resolves unbounded.
+        let settings = parse(
+            r#"[
+                {"key": "rating", "value": 3, "min": 1, "max": 5},
+                {"key": "weights", "value": [1, 2], "max": 10},
+                {"key": "opacity", "value": "0.85", "float": true, "min": 0.5},
+                {"key": "count", "value": 3},
+                {"key": "rows", "value": [[{"key": "scale", "value": "1", "float": true, "min": 0, "max": 2}]]}
+            ]"#,
+        );
+        let bounded = |min: Option<f64>, max: Option<f64>| Bounds { min, max };
+        let flat = flatten_setting_key_types(&settings);
+        assert_eq!(
+            flat["rating"],
+            SettingLeafType::Number(bounded(Some(1.0), Some(5.0)))
+        );
+        assert_eq!(
+            flat["weights[1]"],
+            SettingLeafType::Number(bounded(None, Some(10.0)))
+        );
+        assert_eq!(
+            flat["opacity"],
+            SettingLeafType::Float(bounded(Some(0.5), None))
+        );
+        assert_eq!(flat["count"], UNBOUNDED_NUMBER);
+        assert_eq!(
+            flat["rows[0].scale"],
+            SettingLeafType::Float(bounded(Some(0.0), Some(2.0)))
+        );
+
+        let r = |k: &str| resolve_setting_key_type(&settings, k);
+        assert_eq!(
+            r("weights[7]"),
+            Some(SettingLeafType::Number(bounded(None, Some(10.0))))
+        );
+        assert_eq!(
+            r("rows[3].scale"),
+            Some(SettingLeafType::Float(bounded(Some(0.0), Some(2.0))))
+        );
+
+        // The valid-keys hint spells the range beside the type.
+        assert_eq!(flat["rating"].describe(), "number 1..5");
+        assert_eq!(flat["weights[0]"].describe(), "number ..10");
+        assert_eq!(flat["opacity"].describe(), "float 0.5..");
+        assert_eq!(flat["count"].describe(), "number");
+        assert_eq!(SettingLeafType::Boolean.describe(), "boolean");
+        assert_eq!(SettingLeafType::String.describe(), "string");
     }
 
     #[test]
@@ -256,7 +458,7 @@ mod tests {
         let r = |k: &str| resolve_setting_key_type(&settings, k);
 
         assert_eq!(r("flag"), Some(SettingLeafType::Boolean));
-        assert_eq!(r("group.inner"), Some(SettingLeafType::Number));
+        assert_eq!(r("group.inner"), Some(UNBOUNDED_NUMBER));
 
         // A scalar array accepts any index past the one declared element.
         assert_eq!(r("names[0]"), Some(SettingLeafType::String));
@@ -266,7 +468,7 @@ mod tests {
         // not literally declare still resolves to the template's leaf type.
         assert_eq!(r("items[0].icon"), Some(SettingLeafType::String));
         assert_eq!(r("items[1].icon"), Some(SettingLeafType::String));
-        assert_eq!(r("items[42].action"), Some(SettingLeafType::Number));
+        assert_eq!(r("items[42].action"), Some(UNBOUNDED_NUMBER));
     }
 
     #[test]
@@ -322,7 +524,7 @@ mod tests {
             json!(0)
         );
         assert_eq!(
-            parse_setting_input("k", SettingLeafType::Number, "42").unwrap(),
+            parse_setting_input("k", UNBOUNDED_NUMBER, "42").unwrap(),
             json!(42)
         );
         assert_eq!(
@@ -332,12 +534,95 @@ mod tests {
     }
 
     #[test]
+    fn float_input_is_stored_as_canonical_decimal_text() {
+        for (raw, stored) in [
+            ("0.85", "0.85"),
+            ("1.0", "1"),
+            ("1", "1"),
+            ("1.50", "1.5"),
+            ("1e3", "1000"),
+            (".5", "0.5"),
+            ("-2", "-2"),
+        ] {
+            assert_eq!(
+                parse_setting_input("k", UNBOUNDED_FLOAT, raw).unwrap(),
+                json!(stored),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_non_decimal_float_input() {
+        // Anything `wcstod` would not read as the intended number is refused
+        // before it reaches the store, where the mod would read it as 0.
+        for raw in [
+            "", "abc", "1,5", "inf", "-inf", "nan", "NaN", "1 ", " 1", "0x10",
+        ] {
+            let err = parse_setting_input("k", UNBOUNDED_FLOAT, raw).unwrap_err();
+            assert_eq!(err.exit_code(), 2, "{raw:?}");
+            assert!(
+                err.message().contains("declared as a decimal number"),
+                "{raw:?}: {}",
+                err.message()
+            );
+        }
+    }
+
+    #[test]
     fn rejects_bad_typed_input() {
         let err = parse_setting_input("k", SettingLeafType::Boolean, "yes").unwrap_err();
         assert_eq!(err.exit_code(), 2);
         assert!(err.message().contains("declared as boolean"));
 
-        let err = parse_setting_input("k", SettingLeafType::Number, "1.5").unwrap_err();
+        let err = parse_setting_input("k", UNBOUNDED_NUMBER, "1.5").unwrap_err();
         assert_eq!(err.exit_code(), 2);
+    }
+
+    #[test]
+    fn bounded_input_is_held_to_the_range() {
+        let number =
+            |min: Option<f64>, max: Option<f64>| SettingLeafType::Number(Bounds { min, max });
+        let float =
+            |min: Option<f64>, max: Option<f64>| SettingLeafType::Float(Bounds { min, max });
+        let refused = |ty: SettingLeafType, raw: &str| {
+            let err = parse_setting_input("k", ty, raw).unwrap_err();
+            assert_eq!(err.exit_code(), 2, "{raw}");
+            err.message().to_owned()
+        };
+
+        // Each of the three messages, by which bounds the item declares.
+        assert_eq!(
+            refused(number(Some(1.0), Some(5.0)), "7"),
+            "Setting 'k' must be between 1 and 5, got '7'."
+        );
+        assert_eq!(
+            refused(number(Some(1.0), None), "0"),
+            "Setting 'k' must be at least 1, got '0'."
+        );
+        assert_eq!(
+            refused(float(None, Some(0.5)), "0.75"),
+            "Setting 'k' must be at most 0.5, got '0.75'."
+        );
+
+        // The bounds are inclusive; a boundary value passes on both kinds.
+        assert_eq!(
+            parse_setting_input("k", number(Some(1.0), Some(5.0)), "5").unwrap(),
+            json!(5)
+        );
+        assert_eq!(
+            parse_setting_input("k", number(Some(1.0), Some(5.0)), "1").unwrap(),
+            json!(1)
+        );
+        // A `$float` bound compares numerically, not textually.
+        assert_eq!(
+            parse_setting_input("k", float(None, Some(0.5)), "0.50").unwrap(),
+            json!("0.5")
+        );
+
+        // The type check comes first: a non-number is refused as such, not as
+        // out of range.
+        assert!(refused(number(Some(1.0), Some(5.0)), "x").contains("must be an integer"));
+        assert!(refused(float(Some(1.0), None), "x").contains("declared as a decimal number"));
     }
 }

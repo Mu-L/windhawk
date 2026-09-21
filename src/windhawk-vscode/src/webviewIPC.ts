@@ -1,9 +1,11 @@
 import * as vscode from 'vscode';
 import {
+  CancelCaptureHotkeyReplyData,
   CancelCompileModReplyData,
   CancelImportUserDataReplyData,
   CancelInstallModReplyData,
   CancelUpdateReplyData,
+  CaptureHotkeyReplyData,
   CompileEditedModReplyData,
   CompileModReplyData,
   DeleteEditedModReplyData,
@@ -18,16 +20,22 @@ import {
   GetFeaturedModsReplyData,
   GetInitialAppSettingsReplyData,
   GetInstalledModsReplyData,
+  GetModReviewVotesReplyData,
   GetModConfigReplyData,
+  GetModDynamicSelectOptionsReplyData,
   GetModSettingsReplyData,
   GetModSourceDataReplyData,
   GetModVersionsReplyData,
   GetRepositoryModSourceDataReplyData,
   GetRepositoryModsReplyData,
+  HotkeyCaptureProgressEventData,
   ImportUserDataProgressEventData,
   ImportUserDataReplyData,
   InspectUserDataReplyData,
   InstallModReplyData,
+  ListFontFamiliesReplyData,
+  PickFilePathReplyData,
+  RetractModReviewVoteReplyData,
   SetEditedModDetailsData,
   SetEditedModIdData,
   SetModSettingsReplyData,
@@ -39,7 +47,8 @@ import {
   UpdateInstalledModsDetailsData,
   UpdateInstallingEventData,
   UpdateModConfigReplyData,
-  UpdateModRatingReplyData
+  UpdateModRatingReplyData,
+  VoteModReviewReplyData
 } from './webviewIPCMessages';
 
 // Message types:
@@ -322,6 +331,94 @@ export function setModSettingsReply(
   webview.postMessage(msg);
 }
 
+export function getModDynamicSelectOptionsReply(
+  webview: vscode.Webview | undefined,
+  messageId: number,
+  data: GetModDynamicSelectOptionsReplyData
+) {
+  if (!webview) return;
+  const msg: Reply = {
+    type: 'reply',
+    command: 'getModDynamicSelectOptions',
+    messageId,
+    data,
+  };
+  webview.postMessage(msg);
+}
+
+export function pickFilePathReply(
+  webview: vscode.Webview | undefined,
+  messageId: number,
+  data: PickFilePathReplyData
+) {
+  if (!webview) return;
+  const msg: Reply = {
+    type: 'reply',
+    command: 'pickFilePath',
+    messageId,
+    data,
+  };
+  webview.postMessage(msg);
+}
+
+export function listFontFamiliesReply(
+  webview: vscode.Webview | undefined,
+  messageId: number,
+  data: ListFontFamiliesReplyData
+) {
+  if (!webview) return;
+  const msg: Reply = {
+    type: 'reply',
+    command: 'listFontFamilies',
+    messageId,
+    data,
+  };
+  webview.postMessage(msg);
+}
+
+export function captureHotkeyReply(
+  webview: vscode.Webview | undefined,
+  messageId: number,
+  data: CaptureHotkeyReplyData
+) {
+  if (!webview) return;
+  const msg: Reply = {
+    type: 'reply',
+    command: 'captureHotkey',
+    messageId,
+    data,
+  };
+  webview.postMessage(msg);
+}
+
+export function cancelCaptureHotkeyReply(
+  webview: vscode.Webview | undefined,
+  messageId: number,
+  data: CancelCaptureHotkeyReplyData
+) {
+  if (!webview) return;
+  const msg: Reply = {
+    type: 'reply',
+    command: 'cancelCaptureHotkey',
+    messageId,
+    data,
+  };
+  webview.postMessage(msg);
+}
+
+export function hotkeyCaptureProgress(
+  webview: vscode.Webview | undefined,
+  data: HotkeyCaptureProgressEventData
+) {
+  if (!webview) return;
+  const msg: Event = {
+    type: 'event',
+    command: 'hotkeyCaptureProgress',
+    data,
+  };
+  webview.postMessage(msg);
+}
+
 export function getModConfigReply(
   webview: vscode.Webview | undefined,
   messageId: number,
@@ -451,6 +548,51 @@ export function updateModRatingReply(
   const msg: Reply = {
     type: 'reply',
     command: 'updateModRating',
+    messageId,
+    data,
+  };
+  webview.postMessage(msg);
+}
+
+export function voteModReviewReply(
+  webview: vscode.Webview | undefined,
+  messageId: number,
+  data: VoteModReviewReplyData
+) {
+  if (!webview) return;
+  const msg: Reply = {
+    type: 'reply',
+    command: 'voteModReview',
+    messageId,
+    data,
+  };
+  webview.postMessage(msg);
+}
+
+export function retractModReviewVoteReply(
+  webview: vscode.Webview | undefined,
+  messageId: number,
+  data: RetractModReviewVoteReplyData
+) {
+  if (!webview) return;
+  const msg: Reply = {
+    type: 'reply',
+    command: 'retractModReviewVote',
+    messageId,
+    data,
+  };
+  webview.postMessage(msg);
+}
+
+export function getModReviewVotesReply(
+  webview: vscode.Webview | undefined,
+  messageId: number,
+  data: GetModReviewVotesReplyData
+) {
+  if (!webview) return;
+  const msg: Reply = {
+    type: 'reply',
+    command: 'getModReviewVotes',
     messageId,
     data,
   };

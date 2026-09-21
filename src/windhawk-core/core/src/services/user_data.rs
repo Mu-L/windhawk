@@ -1114,7 +1114,7 @@ fn import_one_mod(
 /// The eight-field `updateModConfig` patch import writes: exactly the user-owned
 /// config subset, all fields present. The five install-owned fields
 /// (`libraryFileName`/`include`/`exclude`/`architecture`/`version`) are never
-/// carried, so restoring config cannot clobber the values install computed (D4);
+/// carried, so restoring config cannot clobber the values install computed;
 /// this "only the eight" discipline lives here, not in `updateModConfig`.
 ///
 /// `updates_disabled_for_version` rides the same all-present rule, and this

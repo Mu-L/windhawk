@@ -1,6 +1,27 @@
 import { ConfigProvider } from 'antd';
+import type { ReactNode } from 'react';
 import type { Components } from 'react-markdown';
 import ReactMarkdownCustom from '@app/components/ReactMarkdownCustom';
+/// #if APP
+import ModLink from '../ModLink';
+import { getModLinkId } from '../modLinkId';
+/// #endif
+
+declare const WEBPACK_IS_APP: boolean;
+
+/// #if APP
+// A link to a mod's page on windhawk.net opens the mod here, the page being
+// what this screen is the app's version of. The website is that page's own
+// host, and follows the link as written.
+function renderModLink(href: string, children: ReactNode) {
+  const modId = getModLinkId(href);
+  return modId === undefined ? undefined : (
+    <ModLink modId={modId} href={href}>
+      {children}
+    </ModLink>
+  );
+}
+/// #endif
 
 interface Props {
   markdown: string;
@@ -39,6 +60,7 @@ function ModDetailsReadme({ markdown, isLocalMod }: Props) {
         markdown={markdown}
         components={customComponents}
         direction="ltr"
+        renderLink={WEBPACK_IS_APP ? renderModLink : undefined}
       />
     </ConfigProvider>
   );

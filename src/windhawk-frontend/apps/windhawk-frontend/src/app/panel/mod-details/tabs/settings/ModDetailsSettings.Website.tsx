@@ -25,6 +25,16 @@ const readOnlyViewProps: EditorViewModel = {
   isDirty: false,
   anySettingModified: false,
   yamlAvailable: false,
+  dynamicSelectOptions: {},
+  onRefreshDynamicSelectOptions: noop,
+  onPickFilePath: () => Promise.resolve(null),
+  fontFamilies: [],
+  hotkeyCapture: {
+    mode: 'primary',
+    held: null,
+    start: () => Promise.resolve({ kind: 'canceled' }),
+    cancel: noop,
+  },
   onChangeSetting: noop,
   onAddArrayItem: noop,
   onRemoveArrayItem: noop,
@@ -36,11 +46,10 @@ const readOnlyViewProps: EditorViewModel = {
   onSave: noop,
 };
 
-export function ModDetailsSettingsWebsite({
-  initialSettings,
-}: Props) {
+export function ModDetailsSettingsWebsite({ modId, initialSettings }: Props) {
   return (
     <ModDetailsSettingsView
+      modId={modId}
       initialSettings={initialSettings}
       readOnly={true}
       {...readOnlyViewProps}

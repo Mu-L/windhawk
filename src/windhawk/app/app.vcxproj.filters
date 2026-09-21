@@ -75,6 +75,9 @@
     <ClCompile Include="ui_functions.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="dark_mode.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="functions.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -146,6 +149,9 @@
     <ClInclude Include="ui_functions.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="dark_mode.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="functions.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -174,6 +180,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="event_viewer_crash_monitor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\shared\session_metadata.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

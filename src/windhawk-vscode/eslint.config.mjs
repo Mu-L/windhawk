@@ -53,12 +53,12 @@ export default defineConfig([
 			],
 		},
 	},
-	// VSCode-independence rule: the core client (coreClient/) and the tests are
-	// the shared, transport-agnostic layer and must not import vscode. They
-	// surface user-facing messages through the Logger interface
-	// (coreClient/logger.ts) instead. The extension layer (src/*.ts,
-	// src/utils/) reaches the shared core only through src/coreClient (the
-	// WindhawkCore contract); vscode is its home turf.
+	// VSCode-independence rule: the core client (coreClient/) is the shared,
+	// transport-agnostic layer and must not import vscode. It surfaces
+	// user-facing messages through the Logger interface (coreClient/logger.ts)
+	// instead. The extension layer (src/*.ts, src/utils/) reaches the shared
+	// core only through src/coreClient (the WindhawkCore contract); vscode is
+	// its home turf.
 	{
 		files: [
 			'src/coreClient/**/*.{ts,tsx}',
@@ -70,7 +70,7 @@ export default defineConfig([
 					paths: [
 						{
 							name: 'vscode',
-							message: 'coreClient/ and test/ must not depend on vscode. Use the Logger interface for notifications.',
+							message: 'This file must stay vscode-independent. Use the Logger interface for notifications.',
 						},
 					],
 				},

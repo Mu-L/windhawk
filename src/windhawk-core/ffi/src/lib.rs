@@ -27,8 +27,8 @@ use windhawk_core::{
     CoreError, Deps, HostCallbacks, LogLevel, Session, core_info_json, panic_message,
 };
 use windhawk_core_windows::{
-    RealProcesses, SystemClock, WindowsFiles, WindowsHttp, WindowsNamedLock,
-    WindowsStorageProvider, is_arm64_native_machine,
+    RealProcesses, SystemClock, WindowsFiles, WindowsFonts, WindowsHotkeyCapture, WindowsHttp,
+    WindowsNamedLock, WindowsStorageProvider, is_arm64_native_machine,
 };
 
 use crate::strings::{borrow_utf8, free_owned_string, give_string};
@@ -127,6 +127,8 @@ pub unsafe extern "C" fn WhCoreSessionCreate(
             files: Arc::new(WindowsFiles),
             named_lock: Arc::new(WindowsNamedLock),
             http: Arc::new(WindowsHttp),
+            fonts: Arc::new(WindowsFonts),
+            hotkey_capture: Arc::new(WindowsHotkeyCapture),
         };
         let session = Session::create(config, is_arm64_native_machine(), callbacks, deps)?;
         // SAFETY: out_session checked non-null above.

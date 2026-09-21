@@ -3,6 +3,7 @@ import { foldingClickHandler } from '@app/panel/shared/foldingClick';
 import useKeyboardShortcut from '@app/panel/shared/useKeyboardShortcut';
 import usePersistedFlag from '@app/panel/shared/usePersistedFlag';
 import {
+  type DynamicSelectOption,
   type InitialSettingItem,
   type InitialSettings,
   type InitialSettingsArrayValue,
@@ -14,25 +15,34 @@ import {
   faCircleInfo,
   faCompress,
   faExpand,
+  faFile,
+  faFolder,
   faGripVertical,
+  faPen,
   faRotateLeft,
   faTableList,
   faTextWidth,
+  faXmark,
 } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   Alert,
+  AutoComplete,
   Button,
   Card,
+  Checkbox,
   ConfigProvider,
   List,
+  Popover,
   Segmented,
   Select,
+  Slider,
   Switch,
   Tooltip,
 } from 'antd';
 import {
   createContext,
+  Fragment,
   lazy,
   Suspense,
   useCallback,
@@ -43,10 +53,47 @@ import {
   useRef,
   useState,
 } from 'react';
+import { HexAlphaColorPicker, HexColorPicker } from 'react-colorful';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import styled, { createGlobalStyle, css, keyframes } from 'styled-components';
-import { type ModSettings, describeSetting, INT32_MAX, INT32_MIN, parseIntLax, SettingType } from './core/yamlConverter';
+import {
+  type ModSettings,
+  type SettingBounds,
+  describeSetting,
+  INT32_MAX,
+  INT32_MIN,
+  parseFloatText,
+  parseIntLax,
+  roundToSliderStep,
+  settingBounds,
+  type SliderRange,
+  sliderRange,
+  sliderStep,
+  SettingType,
+} from './core/yamlConverter';
+import {
+  type DropdownOption,
+  dropdownOptions,
+  optionLabel,
+} from './core/dropdownOptions';
+import {
+  type ColorFormat,
+  colorTextToPicker,
+  isColorFormat,
+  pickerToColorText,
+} from './core/settingColors';
+import {
+  type HotkeyModifiers,
+  formatHotkey,
+  hotkeyLabel,
+  keyOptionMatches,
+  keyOptions,
+  MODIFIER_NAMES,
+  NO_MODIFIERS,
+  parseHotkey,
+  vkLabel,
+} from './core/hotkey';
 import {
   indexAtPrefix,
   isKeyUnder,
@@ -60,12 +107,14 @@ import {
   formatDefaultValue,
   isSettingModified,
 } from './core/settingDefaults';
-import { type EditorViewModel } from './useModSettingsEditor';
+import { createSettingVisibility } from './core/visibility';
+import { readCollapsedKeys, writeCollapsedKeys } from './core/collapsedStorage';
+import { type EditorViewModel, type HotkeyCaptureModel } from './useModSettingsEditor';
 
 // Use webpack constant for conditional compilation
 declare const WEBPACK_IS_WEBSITE: boolean;
 
-// Lazy-load Monaco editor only in extension mode
+// Lazy-load Monaco editor only in the app build
 const MonacoYamlEditor = WEBPACK_IS_WEBSITE
   ? null
   : lazy(() => import('./MonacoYamlEditor'));
@@ -91,6 +140,7 @@ const ARRAY_ITEM_HANDLE_OFFSET = '2px';
 const DENSITY = {
   comfortable: {
     controlSize: 'middle',
+    controlHeight: '32px',
     formPadding: '12px',
     rowPadding: '12px',
     valueRowPadding: '4px',
@@ -104,6 +154,7 @@ const DENSITY = {
   },
   compact: {
     controlSize: 'small',
+    controlHeight: '24px',
     formPadding: '6px',
     rowPadding: '6px',
     valueRowPadding: '2px',
@@ -128,6 +179,10 @@ function densityVariables(density: Density) {
 
   return css`
     --whui-settings-form-padding: ${gaps.formPadding};
+
+    // The height antd draws a control at for the size in force, for what is
+    // drawn beside one and has to stand as tall: a color's swatch.
+    --whui-settings-control-height: ${gaps.controlHeight};
 
     // Set here rather than left to antd's, so the bar marking a row can be
     // inset by the same amount at either density.
@@ -203,9 +258,13 @@ const SettingsWrapper = styled.div<{ $density: Density }>`
   padding-block: var(--whui-settings-form-padding);
 `;
 
+// The width a control over a short value is held to rather than the row's: a
+// number, or a color's swatch and hex.
+const SHORT_VALUE_CONTROL_WIDTH = '140px';
+
 const SettingInputNumber = styled(InputNumberWithContextMenu)`
   width: 100%;
-  max-width: 130px;
+  max-width: ${SHORT_VALUE_CONTROL_WIDTH};
 
   // Remove default VSCode focus highlighting color.
   input:focus {
@@ -216,6 +275,215 @@ const SettingInputNumber = styled(InputNumberWithContextMenu)`
 const SettingSelect = styled(SelectModal)`
   width: 100%;
 `;
+
+// A control drawn as a text field with something ahead of it - a color's
+// swatch, a path's Browse. The field takes what the row has; the other part
+// keeps its own width.
+const SettingControlRow = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+`;
+
+const SettingControlField = styled.div`
+  flex: 1;
+  min-width: 0;
+`;
+
+// Held to a number's width: what is left beside the swatch fits eight hex digits.
+const ColorControlRow = styled(SettingControlRow)`
+  max-width: ${SHORT_VALUE_CONTROL_WIDTH};
+`;
+
+// A slider ahead of the number field it moves: the field is the readout and
+// the exact entry, and the two hold one value. Held to a slider's width, so a
+// wide window does not stretch a 1..5 rail across it.
+const SliderControlRow = styled(SettingControlRow)`
+  max-width: 400px;
+
+  // The row centers the rail on the field; antd's own margins, which stand it
+  // off in a form's flow, would only make the row taller than the field at
+  // the compact density.
+  .ant-slider {
+    margin-block: 0;
+  }
+`;
+
+// How the color's swatch is framed: a square the height antd draws a control at
+// for the density in force, with a border so a swatch the color of the page is
+// still a swatch. The preview draws the same box with no button behind it.
+const colorSwatchFrame = css`
+  flex-shrink: 0;
+  width: var(--whui-settings-control-height);
+  height: var(--whui-settings-control-height);
+  padding: 4px;
+  border: 1px solid var(--whui-border);
+  border-radius: 2px;
+`;
+
+const ColorSwatchButton = styled(Button)`
+  ${colorSwatchFrame}
+
+  // antd sets a button's span inline, on a text line taller than the compact
+  // frame has room for, which sinks the swatch below center.
+  > span {
+    display: block;
+  }
+`;
+
+const ColorSwatchPreview = styled.span`
+  ${colorSwatchFrame}
+  display: inline-block;
+`;
+
+// The swatch itself, over a checkerboard: what a translucent color lets through
+// is drawn as the transparency it is, and a value that spells no color leaves
+// the board bare, which reads as no color rather than as some color it is not.
+const ColorSwatch = styled.span<{ $color: string | null }>`
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-width: 14px;
+  min-height: 14px;
+  border-radius: 1px;
+  background-color: #fff;
+  background-image:
+    linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%),
+    linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%);
+  background-size: 8px 8px;
+  background-position:
+    0 0,
+    4px 4px;
+
+  &::after {
+    content: '';
+    display: block;
+    width: 100%;
+    height: 100%;
+    background-color: ${({ $color }) => $color ?? 'transparent'};
+  }
+`;
+
+// A path's Browse, drawn where a color's swatch is: antd makes a button holding
+// an icon alone a square the height of a control, so it stands as tall as the
+// field beside it at either density.
+const BrowseButton = styled(Button)`
+  flex-shrink: 0;
+`;
+
+// A hotkey's badge: a pill in the field's place holding the body - the chord
+// as keycaps, or what there is instead - and beside it the clear and, where
+// recording is unavailable, the pencil. A button cannot nest a button, so the
+// three are siblings in a span, each focusable on its own. Lit while recording,
+// which is the one moment the badge is waiting on the keyboard. The end inset
+// closes up beside a trailing control, whose own padding makes up the rest;
+// with the body alone it matches the start, so the text sits centered.
+const HotkeyBadge = styled.span<{ $recording: boolean; $trailing: boolean }>`
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  min-height: var(--whui-settings-control-height);
+  padding-inline: 8px ${({ $trailing }) => ($trailing ? '4px' : '8px')};
+  border: 1px solid
+    ${({ $recording }) => ($recording ? 'var(--whui-primary)' : 'var(--whui-border)')};
+  border-radius: 999px;
+  background-color: var(--whui-chip-bg);
+`;
+
+const hotkeyFocusRing = css`
+  &:focus-visible {
+    outline: 1px solid var(--whui-primary);
+    outline-offset: 1px;
+  }
+`;
+
+// The badge's body: what the badge says, as a button in the editor and plain
+// text in the preview.
+const HotkeyBody = styled.button`
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  ${hotkeyFocusRing}
+
+  &[data-static='true'] {
+    cursor: default;
+  }
+`;
+
+const HotkeyKeycap = styled.kbd`
+  padding: 0 6px;
+  border: 1px solid var(--whui-border-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background-color: var(--whui-background-color);
+  font-family: inherit;
+  font-size: 0.92em;
+  line-height: 1.5;
+  white-space: nowrap;
+`;
+
+// Spelled with the spaces around it, so the badge reads `Ctrl + Alt + T` as
+// text too - copied, or read out.
+const HotkeyPlus = styled.span`
+  color: var(--whui-text-secondary);
+  white-space: pre;
+`;
+
+const HotkeyText = styled.span<{ $muted?: boolean }>`
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: ${({ $muted }) => ($muted ? 'var(--whui-text-muted)' : 'inherit')};
+`;
+
+// A stored value the parser does not accept, shown as the text it is.
+const HotkeyRawText = styled(HotkeyText)`
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+`;
+
+// The manual editor a badge opens where the host cannot record: a checkbox
+// per modifier, the list of keys, and the stored form.
+const HotkeyEditor = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 280px;
+`;
+
+const HotkeyEditorRow = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+`;
+
+const HotkeyEditorKeyList = styled(SelectModal)`
+  flex: 1;
+  min-width: 140px;
+`;
+
+const HotkeyStoredAs = styled.div`
+  color: var(--whui-text-secondary);
+
+  code {
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  }
+`;
+
+// The keys the manual editor lists, built once: the list is the same for every
+// hotkey setting.
+const KEY_SELECT_OPTIONS = keyOptions().map(({ vk, label }) => ({ value: vk, label }));
 
 const SettingsCard = styled(Card)`
   width: 100%;
@@ -984,9 +1252,14 @@ const ViewToggleButton = styled(ToolbarButton) <{ $pressed: boolean }>`
 // Type Definitions
 // ============================================================================
 
-type InitialSettingItemExtra = {
-  options?: Record<string, string>[];
-};
+// The annotations a setting carries beside its value, which are what pick the
+// control drawn for a string leaf - a dropdown, a decimal, a color, a path, a
+// font, a hotkey - and the bounds a number control holds its value to. The tree
+// passes them down whole, so an array's rows read the array's own.
+type InitialSettingItemExtra = Pick<
+  InitialSettingItem,
+  'options' | 'format' | 'float' | 'dynamicSelect' | 'min' | 'max'
+>;
 
 /**
  * For read-only object arrays: overlay the annotations (name, description,
@@ -1079,14 +1352,14 @@ function isCollapsibleSetting(value: InitialSettingsValue): boolean {
  */
 function settingState(
   { modSettings, canonicalDraft, canonicalSaved, readOnly }: SettingsTreeProps,
-  value: InitialSettingsValue,
+  item: InitialSettingItem,
   settingKey: string
 ): SettingState | undefined {
   if (readOnly || isInsideArray(settingKey)) {
     return undefined;
   }
 
-  const nonDefault = isSettingModified(modSettings, value, settingKey);
+  const nonDefault = isSettingModified(modSettings, item.value, settingKey, item.float);
   const unsaved = isSubtreeChanged(canonicalDraft, canonicalSaved, settingKey);
 
   if (nonDefault && unsaved) {
@@ -1096,34 +1369,42 @@ function settingState(
 }
 
 /**
- * What a setting drawn as a dropdown offers: the value each option stores, and
- * the label it carries. A setting that is not a dropdown offers nothing.
+ * What the setting at `settingKey` offers as a dropdown: its declared options,
+ * then what the mod wrote at runtime, then the value it holds when neither
+ * names it. Nothing for a setting that is not a dropdown.
  */
-function settingOptions(item: InitialSettingItemExtra): {
-  value: string;
-  label: string;
-}[] {
-  return (item.options ?? []).map((option) => {
-    const [value, label] = Object.entries(option)[0];
-    return { value, label };
-  });
+function settingDropdownOptions(
+  { modSettings, dynamicSelectOptions }: SettingsTreeProps,
+  item: InitialSettingItemExtra,
+  settingKey: string
+): DropdownOption[] {
+  return dropdownOptions(
+    item,
+    settingKey,
+    dynamicSelectOptions,
+    (modSettings[settingKey] ?? '').toString()
+  );
 }
 
 /**
- * How a stored value reads on a dropdown: the label its option carries. A value
- * no option names, and any setting that is not a dropdown, reads as itself.
+ * The declared default of a setting as a single line: a dropdown's by the label
+ * its option carries, a hotkey's by the name of the chord (`Ctrl+Shift+S`, not
+ * `ctrl+shift+83`), in the precedence the control is drawn by. Null for a group
+ * or an array, which has no one value to name.
  */
-function optionLabel(item: InitialSettingItem, value: string): string {
-  return settingOptions(item).find((option) => option.value === value)?.label ?? value;
-}
-
-/**
- * The declared default of a setting as a single line. Null for a group or an
- * array, which has no one value to name.
- */
-function defaultValueLabel(item: InitialSettingItem): string | null {
+function defaultValueLabel(item: InitialSettingItem, options: DropdownOption[]): string | null {
   const value = formatDefaultValue(item.value);
-  return value === null ? null : optionLabel(item, value);
+  if (value === null) {
+    return null;
+  }
+  if (item.options || item.dynamicSelect) {
+    return optionLabel(options, value);
+  }
+  if (item.format === 'hotkey') {
+    const chord = parseHotkey(value);
+    return chord ? hotkeyLabel(chord) : value;
+  }
+  return value;
 }
 
 /**
@@ -1157,7 +1438,9 @@ const ARRAY_ROW_SUMMARY_FIELDS = 3;
  * which says more than the 1 the store keeps it as.
  */
 function rowSummaryValues(
+  settingsTree: SettingsTreeProps,
   children: InitialSettings,
+  elementKey: string,
   valueOf: (child: InitialSettingItem) => string | number | undefined
 ): string[] {
   const values: string[] = [];
@@ -1165,6 +1448,11 @@ function rowSummaryValues(
   for (const child of children) {
     if (values.length === ARRAY_ROW_SUMMARY_FIELDS) {
       break;
+    }
+
+    // A field the row does not show when open is not named when folded either.
+    if (!settingsTree.isSettingVisible(`${elementKey}.${child.key}`)) {
+      continue;
     }
 
     const value = valueOf(child);
@@ -1184,7 +1472,12 @@ function rowSummaryValues(
         break;
 
       case SettingType.String:
-        values.push(optionLabel(child, value.toString()));
+        values.push(
+          optionLabel(
+            settingDropdownOptions(settingsTree, child, `${elementKey}.${child.key}`),
+            value.toString()
+          )
+        );
         break;
 
       default:
@@ -1456,11 +1749,11 @@ function StringSetting({ value, sampleValue, onChange, readOnly }: StringSetting
 interface SelectSettingProps {
   value: string;
   sampleValue?: string;
-  selectItems: {
-    value: string;
-    label: string;
-  }[];
+  selectItems: DropdownOption[];
   onChange: (newValue: string) => void;
+  // Called as the list opens, for a dropdown whose entries can have changed
+  // since it was last drawn.
+  onOpen?: () => void;
   readOnly?: boolean;
 }
 
@@ -1490,6 +1783,7 @@ function SelectSetting({
   sampleValue,
   selectItems,
   onChange,
+  onOpen,
   readOnly,
 }: SelectSettingProps) {
   // Held to a width its options fit in, and let out of it by one too long.
@@ -1518,6 +1812,11 @@ function SelectSetting({
             onChange(newValue as string);
           }
         }}
+        onDropdownVisibleChange={(open) => {
+          if (open) {
+            onOpen?.();
+          }
+        }}
       >
         {selectItems.map((item) => (
           <Select.Option key={item.value} value={item.value} disabled={readOnly}>
@@ -1529,28 +1828,674 @@ function SelectSetting({
   );
 }
 
+/**
+ * antd's InputNumber clamps a value outside its bounds as the field is left,
+ * and reports the clamped value as a change. For a stored value outside the
+ * declared bounds that would be a write the user never made: the value is
+ * shown as it is, marked out of range, and left alone until edited. So until
+ * the field has been edited since it was focused, a change is taken only once
+ * the field's text no longer spells the value it holds - a typed value is
+ * clamped as usual - and a step, which antd reports through onStep after the
+ * same change, is taken from there.
+ */
+function useHeldNumberChange(
+  inputRef: React.RefObject<HTMLInputElement | null>,
+  spellsValue: (text: string) => boolean,
+  onChange: (newValue: string | number | null) => void
+) {
+  const edited = useRef(false);
+  const accept = (newValue: string | number | null) => {
+    edited.current = true;
+    onChange(newValue);
+  };
+  return {
+    onFocus: () => {
+      edited.current = false;
+    },
+    onChange: (newValue: string | number | null) => {
+      const text = inputRef.current?.value;
+      if (!edited.current && text !== undefined && spellsValue(text)) {
+        return;
+      }
+      accept(newValue);
+    },
+    onStep: (newValue: string | number) => accept(newValue),
+  };
+}
+
+interface SettingSliderProps {
+  range: SliderRange;
+  step: number;
+  value: number;
+  onChange: (newValue: number) => void;
+  disabled?: boolean;
+}
+
+/**
+ * The slider a number setting draws over its range, ahead of its field. It
+ * writes on every move, as the color picker does, so the field reads live; no
+ * tooltip, the field being the readout, and no marks. rc-slider reports a
+ * change for a pointer or a key on the handle alone, so a stored value outside
+ * the range is drawn at the nearer end and, like the field, writes nothing
+ * until it is moved.
+ */
+function SettingSlider({ range, step, value, onChange, disabled }: SettingSliderProps) {
+  return (
+    <SettingControlField data-testid="mod-setting-slider">
+      <Slider
+        min={range.min}
+        max={range.max}
+        step={step}
+        value={value}
+        onChange={onChange}
+        disabled={disabled}
+        tooltip={{ open: false }}
+      />
+    </SettingControlField>
+  );
+}
+
 interface NumberSettingProps {
   value: number;
   sampleValue?: number;
+  // The `$min` / `$max` the setting declares, in place of the 32-bit ones.
+  bounds?: SettingBounds;
+  // Whether to draw a slider over the bounds, which takes both of them.
+  slider?: boolean;
   onChange: (newValue: number) => void;
   readOnly?: boolean;
 }
 
-function NumberSetting({ value, sampleValue, onChange, readOnly }: NumberSettingProps) {
+function NumberSetting({
+  value,
+  sampleValue,
+  bounds,
+  slider,
+  onChange,
+  readOnly,
+}: NumberSettingProps) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const held = useHeldNumberChange(
+    inputRef,
+    (text) => parseIntLax(text) === value,
+    (newValue) => onChange(parseIntLax(newValue))
+  );
+
   let placeholder: string | undefined;
   if (readOnly) {
     placeholder = parseIntLax(sampleValue).toString();
   }
 
-  return (
+  const input = (
     <SettingInputNumber
+      ref={inputRef}
       value={readOnly ? undefined : value}
-      min={INT32_MIN}
-      max={INT32_MAX}
-      onChange={(newValue) => onChange(parseIntLax(newValue))}
+      min={bounds?.min ?? INT32_MIN}
+      max={bounds?.max ?? INT32_MAX}
+      onFocus={held.onFocus}
+      onChange={held.onChange}
+      onStep={held.onStep}
       readOnly={readOnly}
       placeholder={placeholder}
     />
+  );
+
+  const range = slider ? sliderRange(bounds) : undefined;
+  if (!range) {
+    return input;
+  }
+  return (
+    <SliderControlRow>
+      <SettingSlider
+        range={range}
+        step={sliderStep(range, false)}
+        value={readOnly ? parseIntLax(sampleValue) : value}
+        onChange={onChange}
+        disabled={readOnly}
+      />
+      {input}
+    </SliderControlRow>
+  );
+}
+
+interface FloatSettingProps {
+  value: string;
+  sampleValue: string;
+  // The `$min` / `$max` the setting declares; none otherwise, the store holding
+  // the text rather than a 32-bit integer.
+  bounds?: SettingBounds;
+  // Whether to draw a slider over the bounds, which takes both of them.
+  slider?: boolean;
+  onChange: (newValue: string) => void;
+  readOnly?: boolean;
+}
+
+/**
+ * A `$float` setting: a number control over the text the setting is held as.
+ * The text is kept as typed while the field is being edited - a long decimal
+ * run through a double at every keystroke would drift - and tidied to the
+ * number's shortest spelling once it is left, the spelling the mod's declared
+ * default is in.
+ */
+function FloatSetting({
+  value,
+  sampleValue,
+  bounds,
+  slider,
+  onChange,
+  readOnly,
+}: FloatSettingProps) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const held = useHeldNumberChange(
+    inputRef,
+    (text) => parseFloatText(text) === parseFloatText(value),
+    (newValue) => onChange(newValue === null ? '' : String(newValue))
+  );
+
+  const input = (
+    <SettingInputNumber
+      ref={inputRef}
+      stringMode
+      value={readOnly ? undefined : value}
+      min={bounds?.min === undefined ? undefined : String(bounds.min)}
+      max={bounds?.max === undefined ? undefined : String(bounds.max)}
+      onFocus={held.onFocus}
+      onChange={held.onChange}
+      onStep={held.onStep}
+      onBlur={() => {
+        const parsed = parseFloatText(value);
+        if (parsed !== null && String(parsed) !== value) {
+          onChange(String(parsed));
+        }
+      }}
+      readOnly={readOnly}
+      placeholder={readOnly ? sampleValue : undefined}
+    />
+  );
+
+  const range = slider ? sliderRange(bounds) : undefined;
+  if (!range) {
+    return input;
+  }
+  const step = sliderStep(range, true);
+  // The handle rests at the low end over text spelling no number: an unset
+  // setting, or a field cleared mid-edit.
+  const number = parseFloatText(readOnly ? sampleValue : value) ?? range.min;
+  return (
+    <SliderControlRow>
+      <SettingSlider
+        range={range}
+        step={step}
+        value={number}
+        onChange={(newValue) => onChange(String(roundToSliderStep(newValue, range, step)))}
+        disabled={readOnly}
+      />
+      {input}
+    </SliderControlRow>
+  );
+}
+
+// Where the picker starts from for a value that spells no color: opaque black
+// in either layout, so the first drag has a color to move away from.
+const PICKER_FALLBACK: Record<ColorFormat, string> = {
+  colorRgb: '#000000',
+  colorArgb: '#000000ff',
+};
+
+interface ColorSettingProps {
+  value: string;
+  sampleValue: string;
+  format: ColorFormat;
+  onChange: (newValue: string) => void;
+  readOnly?: boolean;
+}
+
+/**
+ * A color setting: a swatch opening a picker, beside the text field holding the
+ * raw value. The two are one value read two ways - the picker writes bare
+ * uppercase hex in the declared layout, and the swatch reads whatever the text
+ * holds, leniently, so a value typed with a `#` or shipped in lowercase draws
+ * its color and is rewritten only by a pick. The preview draws the swatch and
+ * the text, with nothing to open.
+ */
+function ColorSetting({ value, sampleValue, format, onChange, readOnly }: ColorSettingProps) {
+  const { t } = useTranslation();
+
+  const pickerColor = colorTextToPicker(readOnly ? sampleValue : value, format);
+  const Picker = format === 'colorArgb' ? HexAlphaColorPicker : HexColorPicker;
+
+  const swatch = (
+    <ColorSwatch
+      $color={pickerColor}
+      data-testid="mod-setting-color-swatch"
+      data-color={pickerColor ?? ''}
+    />
+  );
+
+  return (
+    <ColorControlRow>
+      {readOnly ? (
+        <ColorSwatchPreview>{swatch}</ColorSwatchPreview>
+      ) : (
+        <Popover
+          trigger="click"
+          placement="bottomLeft"
+          overlayClassName="windhawk-popup-content-no-select"
+          content={
+            <Picker
+              color={pickerColor ?? PICKER_FALLBACK[format]}
+              onChange={(hex) => onChange(pickerToColorText(hex, format))}
+            />
+          }
+        >
+          <ColorSwatchButton
+            aria-label={t('modDetails.settings.pickColor')}
+            data-testid="mod-setting-color-pick"
+          >
+            {swatch}
+          </ColorSwatchButton>
+        </Popover>
+      )}
+      <SettingControlField>
+        {/* The bare sample, as a number's: the labeled form does not fit. */}
+        <InputWithContextMenu
+          value={readOnly ? undefined : value}
+          onChange={(e) => onChange(e.target.value)}
+          readOnly={readOnly}
+          placeholder={readOnly ? sampleValue : undefined}
+        />
+      </SettingControlField>
+    </ColorControlRow>
+  );
+}
+
+interface FilePathSettingProps {
+  value: string;
+  sampleValue: string;
+  // Whether the Browse picks a folder (a `folderPath` setting) rather than a file.
+  folder?: boolean;
+  onChange: (newValue: string) => void;
+  onBrowse: (currentPath: string, folder: boolean) => Promise<string | null>;
+  readOnly?: boolean;
+}
+
+/**
+ * A `filePath` or `folderPath` setting: a Browse that asks the host to pick a
+ * file or a folder - the webview has no way to learn a path of its own - beside
+ * the text field holding the path, which can be typed into. The Browse is an
+ * icon of what it picks, named in its tooltip. A dismissed dialog changes
+ * nothing. The preview draws the text alone: there is no host to ask, and
+ * nothing to write.
+ */
+function FilePathSetting({
+  value,
+  sampleValue,
+  folder = false,
+  onChange,
+  onBrowse,
+  readOnly,
+}: FilePathSettingProps) {
+  const { t } = useTranslation();
+  const [browsing, setBrowsing] = useState(false);
+
+  const browseLabel = t(
+    folder ? 'modDetails.settings.browseFolder' : 'modDetails.settings.browseFile'
+  );
+
+  const browse = async () => {
+    setBrowsing(true);
+    try {
+      const path = await onBrowse(value, folder);
+      if (path !== null) {
+        onChange(path);
+      }
+    } finally {
+      setBrowsing(false);
+    }
+  };
+
+  return (
+    <SettingControlRow>
+      {!readOnly && (
+        <BrowseButton
+          icon={<FontAwesomeIcon icon={folder ? faFolder : faFile} />}
+          disabled={browsing}
+          title={browseLabel}
+          aria-label={browseLabel}
+          data-testid="mod-setting-browse"
+          onClick={() => {
+            void browse();
+          }}
+        />
+      )}
+      <SettingControlField>
+        <StringSetting
+          value={value}
+          sampleValue={sampleValue}
+          onChange={onChange}
+          readOnly={readOnly}
+        />
+      </SettingControlField>
+    </SettingControlRow>
+  );
+}
+
+interface FontFamilySettingProps {
+  value: string;
+  sampleValue: string;
+  // The families the host lists, for the completion; empty until it answers, or
+  // when it could not.
+  families: string[];
+  onChange: (newValue: string) => void;
+  readOnly?: boolean;
+}
+
+/**
+ * A `fontFamily` setting: a text field completed over the families the host
+ * lists. A click lists every family; the text typed since the field was focused
+ * narrows the list by case-insensitive substring. Free text is allowed, so a
+ * family the host could not list still types in. The preview draws the declared
+ * name in the family itself, as far as the viewer's browser has it.
+ */
+function FontFamilySetting({
+  value,
+  sampleValue,
+  families,
+  onChange,
+  readOnly,
+}: FontFamilySettingProps) {
+  const { t } = useTranslation();
+  // The text typed since the field was focused or a family picked, or none.
+  // The list narrows by that rather than by the name the field holds, which
+  // may match nothing the host lists.
+  const [typed, setTyped] = useState<string | null>(null);
+
+  if (readOnly) {
+    return (
+      <InputWithContextMenu
+        placeholder={sampleValue}
+        style={{ fontFamily: sampleValue ? `"${sampleValue}"` : undefined }}
+        readOnly
+        data-testid="mod-setting-font-family"
+      />
+    );
+  }
+
+  const search = typed?.toLowerCase();
+  const options = families
+    .filter((family) => search === undefined || family.toLowerCase().includes(search))
+    .map((family) => ({ value: family }));
+
+  return (
+    <AutoComplete
+      style={{ width: '100%' }}
+      value={value}
+      options={options}
+      onFocus={() => setTyped(null)}
+      onSearch={setTyped}
+      onSelect={() => setTyped(null)}
+      onChange={(newValue) => onChange(String(newValue ?? ''))}
+      placeholder={sampleValue ? t('modDetails.settings.sampleValue') + `: ${sampleValue}` : undefined}
+      data-testid="mod-setting-font-family"
+    />
+  );
+}
+
+interface HotkeySettingProps {
+  value: string;
+  sampleValue: string;
+  capture: HotkeyCaptureModel;
+  onChange: (newValue: string) => void;
+  readOnly?: boolean;
+}
+
+/**
+ * A `hotkey` setting: a badge drawing the chord as keycaps, with a clear, and
+ * nothing of the stored form. Clicking the badge records the next shortcut
+ * pressed, through the host: the capture runs ahead of Windows, so a Win
+ * shortcut is recorded and nothing acts on it, and every key is taken while it
+ * runs, so the modifiers the host reports held are drawn as they go down - the
+ * one feedback there is. Where the host cannot record, the badge carries a
+ * pencil instead, and the body and the pencil open an editor: a checkbox per
+ * modifier, a searchable list of keys, and the stored form, read-only. Text the
+ * parser does not accept (an older spelling, a hand edit) is drawn raw, muted,
+ * with a hint, and left alone until a recording or an edit replaces it. The
+ * preview draws the keycaps alone.
+ */
+function HotkeySetting({ value, sampleValue, capture, onChange, readOnly }: HotkeySettingProps) {
+  const { t } = useTranslation();
+  const [recording, setRecording] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(false);
+  // The modifiers checked in the editor before there is a key to hold them: a
+  // chord's own are read from the value.
+  const [pending, setPending] = useState<HotkeyModifiers>(NO_MODIFIERS);
+  const badgeRef = useRef<HTMLSpanElement>(null);
+  // Whether the badge is still there when a capture answers, which it may not
+  // be: the answer can take as long as the user does. Set in the effect rather
+  // than at creation, since a mount can be rehearsed (StrictMode) and its
+  // cleanup would otherwise leave the flag down for the real one.
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const text = readOnly ? sampleValue : value;
+  const chord = parseHotkey(text);
+  const fallback = !readOnly && capture.mode === 'fallback';
+
+  // Record through the host. A refusal has switched the editor to the manual
+  // editor, which opens for the click that was refused rather than wasting it.
+  const record = async () => {
+    if (recording) {
+      return;
+    }
+    setRecording(true);
+    const outcome = await capture.start();
+    if (!mountedRef.current) {
+      return;
+    }
+    setRecording(false);
+    if (outcome.kind === 'hotkey') {
+      onChange(outcome.hotkey);
+    } else if (outcome.kind === 'refused') {
+      setEditorOpen(true);
+    }
+  };
+
+  // Focus leaving the badge - from the body or from its clear - ends a
+  // recording; a move between the two, to the clear that ends it itself, does
+  // not.
+  const onBadgeBlur = (event: React.FocusEvent<HTMLElement>) => {
+    if (recording && !badgeRef.current?.contains(event.relatedTarget as Node | null)) {
+      capture.cancel();
+    }
+  };
+
+  const clear = (event: React.MouseEvent) => {
+    // Not a click on the badge as far as the editor's popover is concerned.
+    event.stopPropagation();
+    if (recording) {
+      capture.cancel();
+    }
+    setPending(NO_MODIFIERS);
+    onChange('');
+  };
+
+  const editorModifiers: HotkeyModifiers = chord ?? pending;
+
+  const setModifier = (name: keyof HotkeyModifiers, checked: boolean) => {
+    const next = { ...editorModifiers, [name]: checked };
+    if (chord) {
+      onChange(formatHotkey({ ...next, vk: chord.vk }));
+    } else {
+      setPending(next);
+    }
+  };
+
+  const setKey = (vk: number) => {
+    onChange(formatHotkey({ ...editorModifiers, vk }));
+  };
+
+  const keycaps = (labels: string[], recordingMore: boolean) => (
+    <>
+      {labels.map((label, index) => (
+        <Fragment key={index}>
+          {index > 0 && <HotkeyPlus> + </HotkeyPlus>}
+          <HotkeyKeycap>{label}</HotkeyKeycap>
+        </Fragment>
+      ))}
+      {recordingMore && (
+        <>
+          <HotkeyPlus> + </HotkeyPlus>
+          <HotkeyText>...</HotkeyText>
+        </>
+      )}
+    </>
+  );
+
+  const heldLabels = (modifiers: HotkeyModifiers) =>
+    MODIFIER_NAMES.filter(([name]) => modifiers[name]).map(([, label]) => label);
+
+  const body = (() => {
+    if (recording) {
+      const held = capture.held;
+      const labels = held ? heldLabels(held) : [];
+      if (labels.length > 0) {
+        return keycaps(labels, true);
+      }
+      return <HotkeyText>{t('modDetails.settings.hotkeyPressKey')}</HotkeyText>;
+    }
+    if (chord) {
+      return keycaps([...heldLabels(chord), vkLabel(chord.vk)], false);
+    }
+    if (text !== '') {
+      return (
+        <HotkeyRawText $muted title={t('modDetails.settings.hotkeyNotRecorded')}>
+          {text}
+        </HotkeyRawText>
+      );
+    }
+    return (
+      <HotkeyText $muted>
+        {t(
+          readOnly || fallback
+            ? 'modDetails.settings.hotkeyNotSet'
+            : 'modDetails.settings.hotkeyEmpty'
+        )}
+      </HotkeyText>
+    );
+  })();
+
+  const bodyTitle = readOnly
+    ? undefined
+    : fallback
+      ? t('modDetails.settings.hotkeyEdit')
+      : recording
+        ? undefined
+        : t('modDetails.settings.hotkeyEmpty');
+
+  const clearable = !readOnly && value !== '';
+
+  const badge = (
+    <HotkeyBadge
+      ref={badgeRef}
+      $recording={recording}
+      $trailing={fallback || clearable}
+      onBlur={readOnly ? undefined : onBadgeBlur}
+    >
+      <HotkeyBody
+        type="button"
+        as={readOnly ? 'span' : undefined}
+        data-static={readOnly ? 'true' : undefined}
+        data-testid="mod-setting-hotkey"
+        data-recording={recording ? 'true' : undefined}
+        title={bodyTitle}
+        onClick={readOnly || fallback ? undefined : () => void record()}
+      >
+        {body}
+      </HotkeyBody>
+      {fallback && (
+        <Button
+          type="text"
+          size="small"
+          shape="circle"
+          icon={<FontAwesomeIcon icon={faPen} />}
+          aria-label={t('modDetails.settings.hotkeyEdit')}
+          title={t('modDetails.settings.hotkeyEdit')}
+          data-testid="mod-setting-hotkey-edit"
+        />
+      )}
+      {clearable && (
+        <Button
+          type="text"
+          size="small"
+          shape="circle"
+          icon={<FontAwesomeIcon icon={faXmark} />}
+          aria-label={t('modDetails.settings.hotkeyClear')}
+          title={t('modDetails.settings.hotkeyClear')}
+          data-testid="mod-setting-hotkey-clear"
+          onClick={clear}
+        />
+      )}
+    </HotkeyBadge>
+  );
+
+  if (!fallback) {
+    return badge;
+  }
+
+  const editor = (
+    <HotkeyEditor data-testid="mod-setting-hotkey-editor">
+      <HotkeyEditorRow>
+        {MODIFIER_NAMES.map(([name, label]) => (
+          <Checkbox
+            key={name}
+            checked={editorModifiers[name]}
+            onChange={(e) => setModifier(name, e.target.checked)}
+            data-testid={`mod-setting-hotkey-mod-${name}`}
+          >
+            {label}
+          </Checkbox>
+        ))}
+      </HotkeyEditorRow>
+      <HotkeyEditorRow>
+        <span>{t('modDetails.settings.hotkeyKey')}</span>
+        <HotkeyEditorKeyList
+          showSearch
+          value={chord?.vk}
+          placeholder={t('modDetails.settings.hotkeyKey')}
+          options={KEY_SELECT_OPTIONS}
+          filterOption={(input, option) =>
+            option !== undefined &&
+            keyOptionMatches({ vk: Number(option.value), label: String(option.label) }, input)
+          }
+          onChange={(vk) => setKey(Number(vk))}
+          data-testid="mod-setting-hotkey-key"
+        />
+      </HotkeyEditorRow>
+      <HotkeyStoredAs>
+        {t('modDetails.settings.hotkeyStoredAs')}:{' '}
+        <code data-testid="mod-setting-hotkey-raw">{value}</code>
+      </HotkeyStoredAs>
+    </HotkeyEditor>
+  );
+
+  // The popover opens on a click anywhere on the badge - the body, the pencil -
+  // and closes on one outside it; the clear keeps its click to itself.
+  return (
+    <Popover
+      trigger="click"
+      placement="bottomLeft"
+      overlayClassName="windhawk-popup-content-no-select"
+      open={editorOpen}
+      onOpenChange={setEditorOpen}
+      content={editor}
+    >
+      {badge}
+    </Popover>
   );
 }
 
@@ -1579,6 +2524,25 @@ interface SettingsTreeProps {
   // the mod or a member of a row of an array.
   collapsedKeys: ReadonlySet<string>;
   onToggleCollapsed: (key: string) => void;
+  // What the mod wrote at runtime for its dynamic dropdowns, and how to ask
+  // again - which a dynamic dropdown does as it opens.
+  dynamicSelectOptions: Record<string, DynamicSelectOption[]>;
+  onRefreshDynamicSelectOptions: () => void;
+  // The host's file dialog, for a path setting's Browse - its folder dialog for
+  // a `folderPath` one.
+  onPickFilePath: (
+    settingKey: string,
+    currentPath: string,
+    folder?: boolean
+  ) => Promise<string | null>;
+  // The font families the host lists, for a `fontFamily` setting's completion.
+  fontFamilies: string[];
+  // The capture a `hotkey` setting's badge records a shortcut through.
+  hotkeyCapture: HotkeyCaptureModel;
+  // Whether the form shows a setting, by its `$showIf` / `$hideIf` conditions
+  // over the draft. Every setting is shown in the read-only preview, which is
+  // there to show what the mod offers.
+  isSettingVisible: (settingKey: string) => boolean;
   readOnly?: boolean;
 }
 
@@ -1607,7 +2571,16 @@ function SingleSetting({
   initialSettingItemExtra,
   settingKey,
 }: SingleSettingProps) {
-  const { modSettings, onSettingChanged, readOnly } = useSettingsTree();
+  const settingsTree = useSettingsTree();
+  const {
+    modSettings,
+    onSettingChanged,
+    onRefreshDynamicSelectOptions,
+    onPickFilePath,
+    fontFamilies,
+    hotkeyCapture,
+    readOnly,
+  } = settingsTree;
   const descriptor = describeSetting(initialSettingsValue);
 
   switch (descriptor.kind) {
@@ -1625,31 +2598,103 @@ function SingleSetting({
         <NumberSetting
           value={parseIntLax(modSettings[settingKey])}
           sampleValue={descriptor.value}
+          bounds={settingBounds(initialSettingItemExtra ?? {})}
+          slider={initialSettingItemExtra?.format === 'slider'}
           onChange={(newValue) => onSettingChanged(settingKey, newValue)}
           readOnly={readOnly}
         />
       );
 
-    case SettingType.String:
-      if (initialSettingItemExtra?.options) {
+    // A string leaf is drawn by its annotations, in a fixed order: a dropdown
+    // over a decimal over a format over plain text. Only the last two can
+    // actually meet - a dropdown needs a string value and a decimal a number -
+    // so what the order settles is that a format beside a dropdown is inert.
+    // The one format a decimal reads, `slider`, it reads itself: a decimal
+    // beside it is a decimal on a slider.
+    case SettingType.String: {
+      const value = (modSettings[settingKey] ?? '').toString();
+      const annotations = initialSettingItemExtra ?? {};
+      const { options, dynamicSelect, float, format } = annotations;
+      const onChange = (newValue: string) => onSettingChanged(settingKey, newValue);
+
+      if (options || dynamicSelect) {
         return (
           <SelectSetting
-            value={(modSettings[settingKey] ?? '').toString()}
+            value={value}
             sampleValue={descriptor.value}
-            selectItems={settingOptions(initialSettingItemExtra)}
-            onChange={(newValue) => onSettingChanged(settingKey, newValue)}
+            selectItems={settingDropdownOptions(settingsTree, annotations, settingKey)}
+            onChange={onChange}
+            onOpen={dynamicSelect && !readOnly ? onRefreshDynamicSelectOptions : undefined}
+            readOnly={readOnly}
+          />
+        );
+      }
+      if (float) {
+        return (
+          <FloatSetting
+            value={value}
+            sampleValue={descriptor.value}
+            bounds={settingBounds(annotations)}
+            slider={format === 'slider'}
+            onChange={onChange}
+            readOnly={readOnly}
+          />
+        );
+      }
+      if (isColorFormat(format)) {
+        return (
+          <ColorSetting
+            value={value}
+            sampleValue={descriptor.value}
+            format={format}
+            onChange={onChange}
+            readOnly={readOnly}
+          />
+        );
+      }
+      if (format === 'filePath' || format === 'folderPath') {
+        return (
+          <FilePathSetting
+            value={value}
+            sampleValue={descriptor.value}
+            folder={format === 'folderPath'}
+            onChange={onChange}
+            onBrowse={(currentPath, folder) => onPickFilePath(settingKey, currentPath, folder)}
+            readOnly={readOnly}
+          />
+        );
+      }
+      if (format === 'fontFamily') {
+        return (
+          <FontFamilySetting
+            value={value}
+            sampleValue={descriptor.value}
+            families={fontFamilies}
+            onChange={onChange}
+            readOnly={readOnly}
+          />
+        );
+      }
+      if (format === 'hotkey') {
+        return (
+          <HotkeySetting
+            value={value}
+            sampleValue={descriptor.value}
+            capture={hotkeyCapture}
+            onChange={onChange}
             readOnly={readOnly}
           />
         );
       }
       return (
         <StringSetting
-          value={(modSettings[settingKey] ?? '').toString()}
+          value={value}
           sampleValue={descriptor.value}
-          onChange={(newValue) => onSettingChanged(settingKey, newValue)}
+          onChange={onChange}
           readOnly={readOnly}
         />
       );
+    }
 
     case SettingType.NumberArray:
     case SettingType.StringArray:
@@ -1917,7 +2962,9 @@ function ArraySettings({
   // filled in yet, which is left to its number alone.
   const arrayRowSummaryValues = (elementKey: string, rowValue: InitialSettingsValue) =>
     rowSummaryValues(
+      settingsTree,
       Array.isArray(rowValue) ? (rowValue as InitialSettings) : [],
+      elementKey,
       (child) =>
         // Editing reads the store, which is what the form is filled in from;
         // previewing reads the sample the mod declares, there being nothing in
@@ -2289,7 +3336,17 @@ function ObjectSettings({ initialSettings, keyPrefix = '' }: ObjectSettingsProps
   const { t } = useTranslation();
 
   const settingsTree = useSettingsTree();
-  const { density, collapsedKeys, onToggleCollapsed, onResetSetting } = settingsTree;
+  const { density, collapsedKeys, onToggleCollapsed, onResetSetting, isSettingVisible } =
+    settingsTree;
+
+  // A hidden setting is left out of the list rather than drawn empty: a row
+  // the renderer returned nothing for would still take its place in the form.
+  // Its value stays in the draft, is saved with the rest, and still marks the
+  // group it sits in, which is how a value under a switch turned off is known
+  // to be there.
+  const shownSettings = initialSettings.filter((item) =>
+    isSettingVisible(keyPrefix + item.key)
+  );
 
   // What a folded setting says about the form it folded away: how many rows an
   // array has, or how many settings a group opens.
@@ -2299,7 +3356,9 @@ function ObjectSettings({ initialSettings, keyPrefix = '' }: ObjectSettingsProps
     switch (descriptor.kind) {
       case SettingType.NestedObject:
         return t('modDetails.settings.foldedSettings', {
-          count: descriptor.children.length,
+          count: descriptor.children.filter((child) =>
+            isSettingVisible(`${settingKey}.${child.key}`)
+          ).length,
         });
 
       case SettingType.NumberArray:
@@ -2324,14 +3383,14 @@ function ObjectSettings({ initialSettings, keyPrefix = '' }: ObjectSettingsProps
     <List
       itemLayout="vertical"
       split={false}
-      dataSource={initialSettings}
+      dataSource={shownSettings}
       renderItem={(item) => {
         const settingKey = keyPrefix + item.key;
         const title = item.name || item.key;
 
         // A group or an array takes the state of anything under it, and its
         // reset puts the whole subtree back.
-        const state = settingState(settingsTree, item.value, settingKey);
+        const state = settingState(settingsTree, item, settingKey);
 
         // A compact row prints no description, carrying it on its title line
         // instead. A line left holding only the title is the plain string antd
@@ -2359,7 +3418,10 @@ function ObjectSettings({ initialSettings, keyPrefix = '' }: ObjectSettingsProps
                   <SettingTitle
                     title={title}
                     state={state}
-                    defaultLabel={defaultValueLabel(item)}
+                    defaultLabel={defaultValueLabel(
+                      item,
+                      settingDropdownOptions(settingsTree, item, settingKey)
+                    )}
                     description={inlineDescription}
                     summary={collapsed ? foldedSummary(item.value, settingKey) : undefined}
                     collapsed={collapsed}
@@ -2402,13 +3464,15 @@ function defaultsReach(defaults: ModSettings, key: string): boolean {
 }
 
 export interface ModDetailsSettingsViewProps extends EditorViewModel {
+  modId: string;
   initialSettings: InitialSettings;
 
-  // Read-only mode (for Website and the extension's preview views).
+  // Read-only mode (for Website and the app's preview views).
   readOnly?: boolean;
 }
 
 export function ModDetailsSettingsView({
+  modId,
   initialSettings,
   readOnly = false,
   mode,
@@ -2420,6 +3484,11 @@ export function ModDetailsSettingsView({
   isDirty,
   anySettingModified,
   yamlAvailable,
+  dynamicSelectOptions,
+  onRefreshDynamicSelectOptions,
+  onPickFilePath,
+  fontFamilies,
+  hotkeyCapture,
   onChangeSetting,
   onAddArrayItem,
   onRemoveArrayItem,
@@ -2445,13 +3514,23 @@ export function ModDetailsSettingsView({
   // a mod that is not installed.
   const density: Density = !readOnly && isCompact ? 'compact' : 'comfortable';
 
-  // Which groups and arrays are folded away. Held only for as long as the
-  // settings are on screen: what one mod's form was left looking like says
-  // nothing about the next mod's, and a remembered fold would quietly undo a
-  // setting having been reached for again.
-  const [collapsedKeys, setCollapsedKeys] = useState<ReadonlySet<string>>(
-    () => new Set()
+  // Which groups and arrays are folded away, remembered per mod: the form comes
+  // back folded the way it was left.
+  const [collapsedKeys, setCollapsedKeys] = useState<ReadonlySet<string>>(() =>
+    readCollapsedKeys(modId)
   );
+
+  // The mod on screen can change without this component being built again, and
+  // a fold belongs to the mod it was made under.
+  const [shownModId, setShownModId] = useState(modId);
+  if (shownModId !== modId) {
+    setShownModId(modId);
+    setCollapsedKeys(readCollapsedKeys(modId));
+  }
+
+  useEffect(() => {
+    writeCollapsedKeys(modId, collapsedKeys);
+  }, [modId, collapsedKeys]);
 
   const toggleCollapsed = useCallback((key: string) => {
     setCollapsedKeys((current) => {
@@ -2583,6 +3662,16 @@ export function ModDetailsSettingsView({
     toggleWordWrap
   );
 
+  // Judged over the draft, so a switch reveals its settings as it is turned,
+  // before a save; one judgement per draft for the whole form.
+  const isSettingVisible = useMemo(
+    () =>
+      readOnly
+        ? () => true
+        : createSettingVisibility(initialSettings, draft, settingDefaults),
+    [readOnly, initialSettings, draft, settingDefaults]
+  );
+
   // What the whole tree is drawn from, put up once for all of it.
   const settingsTree = useMemo<SettingsTreeProps>(
     () => ({
@@ -2601,6 +3690,12 @@ export function ModDetailsSettingsView({
       onResetSetting: resetSetting,
       collapsedKeys,
       onToggleCollapsed: toggleCollapsed,
+      dynamicSelectOptions,
+      onRefreshDynamicSelectOptions,
+      onPickFilePath,
+      fontFamilies,
+      hotkeyCapture,
+      isSettingVisible,
       readOnly,
     }),
     [
@@ -2617,6 +3712,12 @@ export function ModDetailsSettingsView({
       resetSetting,
       collapsedKeys,
       toggleCollapsed,
+      dynamicSelectOptions,
+      onRefreshDynamicSelectOptions,
+      onPickFilePath,
+      fontFamilies,
+      hotkeyCapture,
+      isSettingVisible,
       readOnly,
     ]
   );

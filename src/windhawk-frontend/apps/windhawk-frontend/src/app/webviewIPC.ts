@@ -6,6 +6,8 @@ import { isWireError, surfaceWireError, type WireError } from './feedback';
 import {
   WEBVIEW_IPC_CONTRACT_VERSION,
   isValidSuppression,
+  type CancelCaptureHotkeyData,
+  type CancelCaptureHotkeyReplyData,
   type CancelCompileModData,
   type CancelCompileModReplyData,
   type CancelInstallDevToolsReplyData,
@@ -15,6 +17,8 @@ import {
   type CompileEditedModData,
   type CompileEditedModReplyData,
   type CancelImportUserDataReplyData,
+  type CaptureHotkeyData,
+  type CaptureHotkeyReplyData,
   type CompileModData,
   type CompileModReplyData,
   type DeleteEditedModReplyData,
@@ -39,8 +43,12 @@ import {
   type GetFeaturedModsReplyData,
   type GetInitialAppSettingsReplyData,
   type GetInstalledModsReplyData,
+  type GetModReviewVotesData,
+  type GetModReviewVotesReplyData,
   type GetModConfigData,
   type GetModConfigReplyData,
+  type GetModDynamicSelectOptionsData,
+  type GetModDynamicSelectOptionsReplyData,
   type GetModSettingsData,
   type GetModSettingsReplyData,
   type GetModSourceDataData,
@@ -50,6 +58,7 @@ import {
   type GetRepositoryModSourceDataData,
   type GetRepositoryModSourceDataReplyData,
   type GetRepositoryModsReplyData,
+  type HotkeyCaptureProgressEventData,
   type ImportUserDataData,
   type ImportUserDataProgressEventData,
   type ImportUserDataReplyData,
@@ -57,7 +66,13 @@ import {
   type InspectUserDataReplyData,
   type InstallModData,
   type InstallModReplyData,
+  type ListFontFamiliesData,
+  type ListFontFamiliesReplyData,
   type NoData,
+  type PickFilePathData,
+  type PickFilePathReplyData,
+  type RetractModReviewVoteData,
+  type RetractModReviewVoteReplyData,
   type SetEditedModDetailsData,
   type SetEditedModIdData,
   type SetModSettingsData,
@@ -74,13 +89,17 @@ import {
   type UpdateModConfigData,
   type UpdateModConfigReplyData,
   type UpdateModRatingData,
-  type UpdateModRatingReplyData
+  type UpdateModRatingReplyData,
+  type VoteModReviewData,
+  type VoteModReviewReplyData
 } from './webviewIPCMessages';
 /// #if HAS_MOCKS
 import type { MockDataRegistry } from './mocking';
 import {
   hostEventsAfterReply,
+  hostEventsBeforeReply,
   installedModDetailsAfterOperation,
+  mockReplyDelayMs,
   repositoryModsListing,
   useMockContext,
 } from './mocking';
@@ -237,9 +256,9 @@ function sendDevActionToHost(
  * on does not cover them - and mock mode is exactly the state where `backendApi`
  * is null, so the envelope would reach nothing and the promise behind it would
  * never settle, leaving whatever waits on the launch waiting for good. The mock
- * host answers as it does for a hook: the echo on the window a spec reads a
- * request from, then the reply a tick later through the same scenario rewrite. An
- * empty reply is the editor opening.
+ * host answers as it does for a hook: the echo on the window that makes the
+ * request observable, then the reply a tick later through the same scenario
+ * rewrite. An empty reply is the editor opening.
  */
 function sendDevActionWithMock(
   command: string,
@@ -578,20 +597,44 @@ function usePostMessageWithReplyWithMockDev<
     (data: TPostMessage) => {
       // There is no host to hand the envelope to, so echo it on the window the way
       // the real transport hands it over. A page watching the app - the browser
-      // preview's devtools, an E2E spec - can then see the exact request an action
-      // produces. The app itself ignores it: its listeners take only 'reply' and
-      // 'event' envelopes.
+      // preview's devtools, whatever automates the browser build - can then see
+      // the exact request an action produces. The app itself ignores it: its
+      // listeners take only 'reply' and 'event' envelopes.
       window.postMessage(
         { type: 'messageWithReply', command: eventName, data },
         '*'
       );
-      // Simulate async behavior
+      // Simulate async behavior. A command that stands for something the user
+      // does in the meantime (a hotkey capture) takes the time its fixture
+      // says; everything else answers on the next task.
+      const mockReply = applyScenarioReply(
+        eventName,
+        mockDataSelector(mockData, data)
+      );
+      const delay = mockReplyDelayMs(eventName, mockData);
+      // What a host pushes while it works, ahead of its answer - the held
+      // modifiers of a capture in flight - spread over the wait, each on a
+      // timer of its own so it lands before the answer does: a post made
+      // beside the answer's resolve would reach the window after a consumer
+      // awaiting the reply had moved on.
+      const onTheWay = hostEventsBeforeReply(
+        eventName,
+        mockData,
+        mockReply as Record<string, unknown>
+      );
+      onTheWay.forEach((event, index) => {
+        setTimeout(
+          () => {
+            window.postMessage(
+              { type: 'event', command: event.command, data: event.data },
+              '*'
+            );
+          },
+          (delay * (index + 1)) / (onTheWay.length + 1)
+        );
+      });
       return new Promise<RequestResult<TReply>>((resolve) => {
         setTimeout(() => {
-          const mockReply = applyScenarioReply(
-            eventName,
-            mockDataSelector(mockData, data)
-          );
           // Through the same reply effects the host round trip runs, so a
           // scenario's failure reply reaches the app the way a real one does -
           // and with no host to have reported it, the notification is raised
@@ -614,7 +657,7 @@ function usePostMessageWithReplyWithMockDev<
           // settle here as it does against a host, or it hangs in the browser
           // preview and in every journey.
           resolve({ status: 'reply', data: mockReply });
-        }, 0);
+        }, delay);
       });
     },
     [eventName, mockData, mockDataSelector]
@@ -652,7 +695,7 @@ function usePostMessageWithReplyWithMockProd<
  * reaches no answer at all - the screen waiting on the reply is dead for the
  * session, and a caller awaiting the request waits for good, in the one build with
  * no host to blame for it. The echo it posts is also the only way a request is
- * observable to a spec driving the browser build.
+ * observable from outside the app in the browser build.
  */
 const usePostMessageWithReplyWithMock = WEBPACK_HAS_MOCKS
   ? usePostMessageWithReplyWithMockDev
@@ -836,6 +879,92 @@ export function useUpdateModRating() {
   };
 }
 
+// The votes the user cast on a mod's reviews, read when its reviews are shown.
+// A host over a core from before the command answers with the error attached,
+// which the reviews modal takes as no votes and no voting.
+export function useGetModReviewVotes() {
+  const selector = useCallback(
+    (mockData: MockDataRegistry, request: GetModReviewVotesData) => ({
+      modId: request.modId,
+      votes: mockData.reviewVotes[request.modId] ?? [],
+    }),
+    []
+  );
+  const result = usePostMessageWithReplyWithMock<
+    GetModReviewVotesData,
+    GetModReviewVotesReplyData
+  >('getModReviewVotes', selector);
+  return {
+    getModReviewVotes: result.postMessage,
+    getModReviewVotesPending: result.pending,
+  };
+}
+
+// An upvote on a review: the reply is the mod's whole list after the write,
+// which replaces the caller's cache. The mock host writes it back into the
+// registry as the real one writes the profile, so a read that follows finds
+// it.
+export function useVoteModReview() {
+  const selector = useCallback(
+    (mockData: MockDataRegistry, request: VoteModReviewData) => {
+      const votes = mockData.reviewVotes[request.modId] ?? [];
+      if (!votes.some((vote) => vote.reviewId === request.reviewId)) {
+        mockData.reviewVotes[request.modId] = [
+          ...votes,
+          {
+            reviewId: request.reviewId,
+            timestamp: Math.floor(Date.now() / 1000),
+          },
+        ];
+      }
+      return {
+        modId: request.modId,
+        votes: mockData.reviewVotes[request.modId],
+        succeeded: true,
+      };
+    },
+    []
+  );
+  const result = usePostMessageWithReplyWithMock<
+    VoteModReviewData,
+    VoteModReviewReplyData
+  >('voteModReview', selector);
+  return {
+    voteModReview: result.postMessage,
+    voteModReviewPending: result.pending,
+  };
+}
+
+// A vote taken back: the reply is the mod's whole list after the write, as
+// the vote's is, and a vote the host does not hold is a successful no-op. The
+// mock host removes it from the registry as the real one removes it from the
+// profile, so a read that follows finds it gone.
+export function useRetractModReviewVote() {
+  const selector = useCallback(
+    (mockData: MockDataRegistry, request: RetractModReviewVoteData) => {
+      const votes = mockData.reviewVotes[request.modId] ?? [];
+      const kept = votes.filter((vote) => vote.reviewId !== request.reviewId);
+      if (kept.length !== votes.length) {
+        mockData.reviewVotes[request.modId] = kept;
+      }
+      return {
+        modId: request.modId,
+        votes: kept,
+        succeeded: true,
+      };
+    },
+    []
+  );
+  const result = usePostMessageWithReplyWithMock<
+    RetractModReviewVoteData,
+    RetractModReviewVoteReplyData
+  >('retractModReviewVote', selector);
+  return {
+    retractModReviewVote: result.postMessage,
+    retractModReviewVotePending: result.pending,
+  };
+}
+
 export function useGetInstalledMods() {
   const selector = useCallback(
     (mockData: MockDataRegistry) => ({ installedMods: mockData.installedMods }),
@@ -960,7 +1089,7 @@ export function useGetModSettings() {
   const selector = useCallback(
     (mockData: MockDataRegistry, request: GetModSettingsData) => ({
       modId: request.modId,
-      settings: mockData.modSettings as Record<string, string | number>,
+      settings: mockData.modSettings(request.modId),
     }),
     []
   );
@@ -989,6 +1118,102 @@ export function useSetModSettings() {
   return {
     setModSettings: result.postMessage,
     setModSettingsPending: result.pending,
+  };
+}
+
+// The options a mod wrote at runtime for its `$dynamicSelect` settings, keyed by
+// setting path. Asked for when the settings editor mounts and again as a dynamic
+// dropdown opens; nothing pushes a change from the engine.
+export function useGetModDynamicSelectOptions() {
+  const selector = useCallback(
+    (mockData: MockDataRegistry, request: GetModDynamicSelectOptionsData) => ({
+      modId: request.modId,
+      options: mockData.modDynamicSelectOptions,
+    }),
+    []
+  );
+  const result = usePostMessageWithReplyWithMock<
+    GetModDynamicSelectOptionsData,
+    GetModDynamicSelectOptionsReplyData
+  >('getModDynamicSelectOptions', selector);
+  return {
+    getModDynamicSelectOptions: result.postMessage,
+    getModDynamicSelectOptionsPending: result.pending,
+  };
+}
+
+// The host's native Open dialog, for a `filePath` setting, or its folder dialog
+// for a `folderPath` one: a file input inside the webview yields no filesystem
+// path, so the host owns the pick. The reply carries the path, or says the
+// dialog was dismissed.
+export function usePickFilePath() {
+  const selector = useCallback(
+    (mockData: MockDataRegistry, request: PickFilePathData) => ({
+      path: request.folder ? mockData.pickedFolderPath : mockData.pickedFilePath,
+    }),
+    []
+  );
+  const result = usePostMessageWithReplyWithMock<
+    PickFilePathData,
+    PickFilePathReplyData
+  >('pickFilePath', selector);
+  return {
+    pickFilePath: result.postMessage,
+    pickFilePathPending: result.pending,
+  };
+}
+
+// The font families installed on the host machine, for a `fontFamily` setting's
+// completion; the webview cannot enumerate them on its own. Asked once per
+// settings editor that declares such a setting.
+export function useListFontFamilies() {
+  const selector = useCallback(
+    (mockData: MockDataRegistry) => ({ families: mockData.fontFamilies }),
+    []
+  );
+  const result = usePostMessageWithReplyWithMock<
+    ListFontFamiliesData,
+    ListFontFamiliesReplyData
+  >('listFontFamilies', selector);
+  return {
+    listFontFamilies: result.postMessage,
+    listFontFamiliesPending: result.pending,
+  };
+}
+
+// The next keyboard shortcut pressed, recorded by the host for a `hotkey`
+// setting's badge. The reply lands when the capture ends - with the shortcut
+// in the stored form, or null with the reason there is none - and the held
+// modifiers arrive as hotkeyCaptureProgress events on the way. A host that
+// cannot record answers null with the error attached, which the editor takes
+// as the cue for its manual editor.
+export function useCaptureHotkey() {
+  const selector = useCallback(
+    (mockData: MockDataRegistry) => ({ hotkey: mockData.hotkeyCapture.hotkey }),
+    []
+  );
+  const result = usePostMessageWithReplyWithMock<
+    CaptureHotkeyData,
+    CaptureHotkeyReplyData
+  >('captureHotkey', selector);
+  return {
+    captureHotkey: result.postMessage,
+    captureHotkeyPending: result.pending,
+  };
+}
+
+// End the capture in flight, if any; its own reply still arrives, as canceled.
+export function useCancelCaptureHotkey() {
+  // A mock capture is answered within a task, so a cancel that gets here names
+  // one that has already ended.
+  const selector = useCallback(() => ({ signaled: false }), []);
+  const result = usePostMessageWithReplyWithMock<
+    CancelCaptureHotkeyData,
+    CancelCaptureHotkeyReplyData
+  >('cancelCaptureHotkey', selector);
+  return {
+    cancelCaptureHotkey: result.postMessage,
+    cancelCaptureHotkeyPending: result.pending,
   };
 }
 
@@ -1447,6 +1672,18 @@ export function useSetEditedModDetails(
     'setEditedModDetails',
     handler,
     selector
+  );
+}
+
+// The modifiers a hotkey capture in flight reports held, on every change of the
+// set. Plain (no mock injection at mount): the mock host pushes these ahead of
+// its captureHotkey reply, on the window this listens on.
+export function useHotkeyCaptureProgress(
+  handler: (data: HotkeyCaptureProgressEventData) => void
+) {
+  useEventMessageWithHandler<HotkeyCaptureProgressEventData>(
+    'hotkeyCaptureProgress',
+    handler
   );
 }
 

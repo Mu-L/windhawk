@@ -28,6 +28,7 @@ use windhawk_core_protocol::{
 use windows_sys::Win32::Foundation::SYSTEMTIME;
 use windows_sys::Win32::System::SystemInformation::GetLocalTime;
 
+use crate::commands::dialog_error;
 use crate::file_dialog::{DialogOutcome, FileDialog};
 use crate::ipc::bridge::BridgeCtx;
 use crate::ipc::envelope::Envelope;
@@ -370,14 +371,6 @@ fn too_large_error(path: &Path, size: u64) -> HostError {
         ErrorCode::InvalidRequest,
         format!("archive is too large ({size} bytes; the maximum is {MAX_ARCHIVE_BYTES})"),
         json!({ "path": path.display().to_string() }),
-    ))
-}
-
-/// A file-dialog (COM/shell) failure as an internal wire error.
-fn dialog_error(message: &str) -> HostError {
-    HostError::wire(WireError::new(
-        ErrorCode::Internal,
-        format!("file dialog: {message}"),
     ))
 }
 

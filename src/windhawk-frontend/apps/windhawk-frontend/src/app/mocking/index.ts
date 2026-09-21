@@ -75,19 +75,12 @@ export type {
 export {
   defaultMockData,
   hostEventsAfterReply,
+  hostEventsBeforeReply,
   installedModDetailsAfterOperation,
+  mockAnnotatedInitialSettings,
+  mockAnnotatedModSettings,
+  mockReplyDelayMs,
   repositoryModsListing,
 } from './MockRegistry';
 
 export { MockProvider, useMockContext } from './MockProvider';
-
-// ============================================================================
-// Test Utilities
-// ============================================================================
-
-// Nothing spec-side is re-exported here, and nothing should be. This barrel is in
-// the app's runtime graph (main.tsx imports MockProvider, webviewIPC.ts imports
-// useMockContext), so re-exporting the shared render harness would drag
-// @testing-library/react and its module-level i18n init into the dev/website
-// bundle, which tree-shaking only removes in production. Specs import the harness
-// and the stand-in host from the modules that define them instead.

@@ -424,6 +424,19 @@ pub struct SetModSettingsParams {
     pub settings: serde_json::Map<String, Value>,
 }
 
+/// One option of a `$dynamicSelect` setting, as `getModDynamicSelectOptions`
+/// reports it: what a selection stores and the text the dropdown shows. The
+/// result is a JSON object of setting path -> array of these, both in the order
+/// the mod wrote them; it is decoded through `serde_json::Map` (insertion-
+/// ordered) and this per-entry DTO, since a keyed struct or a sorted map would
+/// lose that order.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DynamicSelectOption {
+    pub value: String,
+    pub label: String,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SetModLoggingEnabledParams {

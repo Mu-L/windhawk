@@ -82,6 +82,10 @@ export type HeaderActions = {
   // mod is in no listing to be rated in. Whether that copy was ever compiled is
   // nothing to it.
   rate: boolean;
+  // Whether the mod's reviews can be opened for reading and writing, on the
+  // same terms as the rating: a review is written about the copy on the
+  // machine, and a local mod has no page for one.
+  review: boolean;
 };
 
 export type HeaderActionsInput = {
@@ -133,6 +137,7 @@ export function resolveHeaderActions(input: HeaderActionsInput): HeaderActions {
       forkFromSource,
       installed: [],
       rate: false,
+      review: false,
     };
   }
 
@@ -199,5 +204,6 @@ export function resolveHeaderActions(input: HeaderActionsInput): HeaderActions {
         ? ['edit', 'fork', 'remove']
         : ['fork', 'remove'],
     rate: showingInstalledVersion && !isLocalMod,
+    review: showingInstalledVersion && !isLocalMod,
   };
 }

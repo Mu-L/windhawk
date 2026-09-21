@@ -43,7 +43,7 @@ pub fn export(env: &Environment, args: DataExportArgs) -> Result<Box<dyn Command
     let result: ExportUserDataResult = env.core.invoke_as("exportUserData", &params)?;
 
     // Best-effort export: per-mod warnings go to stderr (they also ride in the
-    // `--json` summary), matching `data export` in the plan.
+    // `--json` summary).
     for warning in &result.summary.warnings {
         env.logger
             .warn(&format!("{}: {}", warning.mod_id, warning.message));
@@ -310,7 +310,7 @@ fn build_selection(flags: &SelectionFlags) -> Result<UserDataSelection, CliError
 }
 
 /// Reject a `--skip-*` / `--with-*` id that is not in the export scope (a usage
-/// error, exit 2, per CLI_SPEC). Only runs when there are per-mod overrides; a
+/// error, exit 2). Only runs when there are per-mod overrides; a
 /// keyword scope reads the installed set to resolve which ids it selects, while
 /// an explicit `--mods` list is the scope itself.
 #[track_caller]

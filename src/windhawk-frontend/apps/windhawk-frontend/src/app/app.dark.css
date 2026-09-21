@@ -26837,6 +26837,7 @@ div.ant-typography-edit-content.ant-typography-rtl {
   --whui-max-width: 1200px;
   --whui-background-color: #1e1e1e;
   --whui-card-background-color: #141414;
+  --whui-modal-background-color: #1f1f1f;
   --whui-logo-color: #ffffff;
   --whui-logo-color-hover: #ffffff;
   --whui-text-muted: rgba(255, 255, 255, 0.45);
@@ -26854,7 +26855,7 @@ div.ant-typography-edit-content.ant-typography-rtl {
   --whui-border-strong: #434343;
   --whui-border-faint: rgba(255, 255, 255, 0.2);
   --whui-divider: #454545;
-  --whui-chip-bg: #444444;
+  --whui-chip-bg: rgba(255, 255, 255, 0.17);
   --whui-float-bg: #2d2d2d;
   --whui-inline-code-bg: rgba(60, 60, 60, 0.4);
   --whui-hover-bg: rgba(127, 127, 127, 0.22);
@@ -26957,6 +26958,24 @@ body:has(.monaco-editor .find-widget.visible) .workbench-hover-container .action
   gap: 6px !important;
   align-items: center !important;
   white-space: nowrap !important;
+}
+.ant-popover-inner {
+  background-color: #434343;
+}
+.ant-popover-inner-content,
+.ant-popover-message {
+  color: #fff;
+}
+.ant-popover-arrow-content {
+  --antd-arrow-background-color: #434343;
+}
+.ant-popover .ant-btn-default:not(.ant-btn-dangerous):not([disabled]) {
+  border-color: rgba(255, 255, 255, 0.25);
+}
+.ant-popover .ant-btn-default:not(.ant-btn-dangerous):not([disabled]):hover,
+.ant-popover .ant-btn-default:not(.ant-btn-dangerous):not([disabled]):focus {
+  color: #3c9be8;
+  border-color: #3c9be8;
 }
 .ant-select-item-option-active:not(.ant-select-item-option-disabled) {
   color: #fff;

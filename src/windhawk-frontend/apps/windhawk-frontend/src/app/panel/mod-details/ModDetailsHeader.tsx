@@ -1,26 +1,38 @@
 import EllipsisText from '@app/components/EllipsisText';
 import { PopconfirmModal } from '@app/components/InputWithContextMenu';
-import { getDisplayModId, sanitizeUrl, testIdProps } from '@app/utils';
+import {
+  getDisplayModId,
+  isLocalModId,
+  sanitizeUrl,
+  testIdProps,
+} from '@app/utils';
 import { type ModMetadata, type RepositoryDetails, type UpdateSuppression } from '@app/webviewIPCMessages';
 import { faGithubAlt, faXTwitter } from '@fortawesome/free-brands-svg-icons';
 import {
   faArrowLeft,
   faArrowRight,
+  faComment,
   faHeart,
   faHome,
   faUser,
 } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { Alert, Button, Card, ConfigProvider, Dropdown, Modal, Rate, Tooltip } from 'antd';
+import { Alert, Button, Card, ConfigProvider, Divider, Dropdown, Modal, Rate, Tooltip } from 'antd';
 import React, { Fragment, useContext, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import styled from 'styled-components';
 import { DevModeAction, ModMetadataLine } from '../shared';
+import ModReviewsModal from '../shared/reviews/ModReviewsModal';
 import type {
   HeaderActions,
   InstalledModAction,
   ModDetailsState,
 } from './modDetailsState';
+import ModPageButtons from './ModPageButtons';
+import { useOpenInWindhawk } from './useOpenInWindhawk';
+
+const WINDHAWK_SETUP_URL =
+  'https://ramensoftware.com/downloads/windhawk_setup.exe';
 
 const ModDetailsHeaderWrapper = styled.div`
   display: flex;
@@ -77,6 +89,26 @@ const ModRate = styled(Rate)`
   line-height: 0.7;
 `;
 
+// The stars and, past a divider, the way to the reviews.
+const RatingLine = styled.div`
+  display: flex;
+  align-items: center;
+`;
+
+// Centered between the last star and the icon: the button's own border and
+// padding lie between it and the icon, so the star's side gets as much.
+const RatingDivider = styled(Divider)`
+  margin-inline-start: 16px;
+`;
+
+const ReviewsButton = styled(Button)`
+  color: var(--whui-text-secondary);
+
+  > .svg-inline--fa {
+    margin-inline-end: 6px;
+  }
+`;
+
 const HeartIcon = styled(FontAwesomeIcon)`
   color: #ff4d4f;
   margin-inline-end: 4px;
@@ -107,6 +139,14 @@ const CardTitleButtons = styled.div`
 // row.
 const CardTitleButtonWrapper = styled.div`
   font-size: 0;
+`;
+
+// A line of its own under the buttons, in the row that holds them.
+const NotInstalledNotice = styled.div`
+  flex-basis: 100%;
+  color: var(--whui-text-muted);
+  font-size: 14px;
+  font-weight: normal;
 `;
 
 const ModInstallationAlert = styled(Alert)`
@@ -241,8 +281,8 @@ export type HeaderActionsAndCallbacks = {
   callbacks: HeaderCallbacks;
 };
 
-// Extension-only header props
-export type ExtensionHeaderProps = {
+// App-only header props
+export type ModDetailsHeaderAppProps = {
   // Null where the screen's owner wired none of it. The editor's preview is such
   // a screen: every action it could show would report itself unavailable, and
   // the row of them is space that buys nothing. It says nothing about the tabs,
@@ -251,7 +291,7 @@ export type ExtensionHeaderProps = {
 };
 
 /**
- * The row of actions the extension leads with, which the website build has none
+ * The row of actions the app leads with, which the website build has none
  * of.
  *
  * Which actions the mod's state calls for was worked out by the resolver, so
@@ -489,6 +529,53 @@ function ModDetailsHeaderActions(props: {
   );
 }
 
+/**
+ * What the website leads with in place of the actions: the app to get, and, for
+ * a visitor who can have it (Windows is the one pre-click gate), the link that
+ * opens the mod in it. The launch is watched rather than known, and a click
+ * that observably went nowhere says so under the buttons, with the download a
+ * click away; a launch, or the browser's own prompt about one, says nothing.
+ */
+function ModDetailsWebsiteActions(props: { modId: string }) {
+  const { t } = useTranslation();
+
+  const { modId } = props;
+
+  const { href, open, pending, notInstalled } = useOpenInWindhawk(modId);
+
+  // const shouldOfferOpenInWindhawk = isWindowsPlatform();
+  const shouldOfferOpenInWindhawk = false; // TODO: Re-enable when Windhawk 2.0 is widely available
+
+  return (
+    <>
+      <Button type="primary" size="small" href={WINDHAWK_SETUP_URL}>
+        {t('website.modDetails.getWindhawk')}
+      </Button>
+      {shouldOfferOpenInWindhawk && (
+        <Button
+          type="primary"
+          size="small"
+          href={href}
+          loading={pending}
+          data-testid="mod-details-open-in-windhawk"
+          onClick={open}
+        >
+          {t('website.modDetails.openInWindhawk')}
+        </Button>
+      )}
+      {notInstalled && (
+        <NotInstalledNotice role="status" data-testid="mod-details-not-installed">
+          <Trans
+            t={t}
+            i18nKey="website.modDetails.notInstalled"
+            components={[<a href={WINDHAWK_SETUP_URL}>Get Windhawk</a>]}
+          />
+        </NotInstalledNotice>
+      )}
+    </>
+  );
+}
+
 interface Props {
   topNode?: React.ReactNode;
   modId: string;
@@ -501,19 +588,19 @@ interface Props {
   // nowhere for the way back to lead.
   goBack?: () => void;
 
-  // Extension-specific props (all grouped together)
-  extensionHeaderProps?: ExtensionHeaderProps;
+  // App-specific props (all grouped together)
+  appHeaderProps?: ModDetailsHeaderAppProps;
 }
 
 function ModDetailsHeader(props: Props) {
   const { t } = useTranslation();
 
-  const { modId, modMetadata, state, repositoryDetails, goBack, extensionHeaderProps } = props;
+  const { modId, modMetadata, state, repositoryDetails, goBack, appHeaderProps } = props;
 
   // What this screen can do with the mod, and what to run for each. Null for a
   // screen that wires none of it - the rating goes with the rest, being one of
   // the writes a preview leaves out.
-  const headerActions = extensionHeaderProps?.headerActions ?? null;
+  const headerActions = appHeaderProps?.headerActions ?? null;
 
   // The mod's own copy on the machine, which the rating is a value of. Whether
   // it can be rated at all is the resolver's answer above.
@@ -525,6 +612,8 @@ function ModDetailsHeader(props: Props) {
     (shown.kind === 'installed' && installedMod?.config) || undefined;
 
   const { direction } = useContext(ConfigProvider.ConfigContext);
+
+  const [reviewsOpen, setReviewsOpen] = useState(false);
 
   const displayModId = getDisplayModId(modId);
 
@@ -553,6 +642,15 @@ function ModDetailsHeader(props: Props) {
                 >
                   <CardTitleModId>{displayModId}</CardTitleModId>
                 </Tooltip>
+                {/* A local mod has no page. The website is the page, and
+                    offers it nowhere else. */}
+                {!isLocalModId(modId) && (
+                  <ModPageButtons
+                    modId={modId}
+                    modName={displayModName}
+                    openInBrowser={!!appHeaderProps}
+                  />
+                )}
               </CardTitleFirstLine>
               <ModMetadataLine
                 modMetadata={modMetadata}
@@ -569,23 +667,44 @@ function ModDetailsHeader(props: Props) {
                   {modMetadata.description}
                 </CardTitleDescription>
               )}
-              {headerActions?.actions.rate && (
-                <ModRate
-                  value={installedMod?.userRating}
-                  onChange={(newRating) =>
-                    headerActions.callbacks.updateModRating(newRating)
-                  }
+              {headerActions &&
+                (headerActions.actions.rate || headerActions.actions.review) && (
+                  <RatingLine>
+                    {headerActions.actions.rate && (
+                      <ModRate
+                        value={installedMod?.userRating}
+                        onChange={(newRating) =>
+                          headerActions.callbacks.updateModRating(newRating)
+                        }
+                      />
+                    )}
+                    {headerActions.actions.rate && headerActions.actions.review && (
+                      <RatingDivider type="vertical" />
+                    )}
+                    {headerActions.actions.review && (
+                      <ReviewsButton
+                        type="text"
+                        size="small"
+                        data-testid="mod-details-reviews"
+                        onClick={() => setReviewsOpen(true)}
+                      >
+                        <FontAwesomeIcon icon={faComment} />
+                        {t('mod.reviews.label')}
+                      </ReviewsButton>
+                    )}
+                  </RatingLine>
+                )}
+              {reviewsOpen && (
+                <ModReviewsModal
+                  modId={modId}
+                  modName={displayModName}
+                  posting={{ modVersion: installedMod?.metadata?.version }}
+                  onClose={() => setReviewsOpen(false)}
                 />
               )}
               <CardTitleButtons data-testid="mod-actions">
-                {!extensionHeaderProps ? (
-                  <Button
-                    type="primary"
-                    size="small"
-                    href="https://ramensoftware.com/downloads/windhawk_setup.exe"
-                  >
-                    {t('website.modDetails.getWindhawk')}
-                  </Button>
+                {!appHeaderProps ? (
+                  <ModDetailsWebsiteActions modId={modId} />
                 ) : headerActions && (
                   <ModDetailsHeaderActions
                     actions={headerActions.actions}
@@ -596,7 +715,7 @@ function ModDetailsHeader(props: Props) {
                 )}
                 {/* Not an action on the mod but a link away from it, which
                     stands whether or not this screen can act. */}
-                {extensionHeaderProps && modMetadata.donateUrl && (
+                {appHeaderProps && modMetadata.donateUrl && (
                   <Button
                     type="primary"
                     size="small"

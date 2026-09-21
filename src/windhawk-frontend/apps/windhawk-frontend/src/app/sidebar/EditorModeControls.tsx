@@ -337,6 +337,7 @@ function EditorModeControls({ initialModDetails, onExitEditorMode }: Props) {
         {isModCompiled && (
           <PopconfirmModal
             placement="bottom"
+            disabled={compileEditedModPending}
             title={t('mod.removeConfirm')}
             okText={t('mod.remove')}
             cancelText={t('general.actions.cancel')}

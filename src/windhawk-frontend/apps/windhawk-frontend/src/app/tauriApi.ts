@@ -8,7 +8,7 @@
 //
 // The Tauri API is reached through the `withGlobalTauri` global rather than the
 // @tauri-apps/api package, so this module pulls no new dependency into the
-// shared front-end and the extension/website bundles are unaffected.
+// shared front-end and the VSCode/website bundles are unaffected.
 
 type TauriEvent<T> = { payload: T };
 
@@ -33,6 +33,9 @@ type TauriGlobal = {
 declare global {
   interface Window {
     __TAURI__?: TauriGlobal;
+    // The windhawk:// link a cold start was launched with, set by the shell's
+    // initialization script before this bundle runs (takeInitialDeepLink).
+    __WINDHAWK_DEEP_LINK__?: unknown;
   }
 }
 
@@ -111,4 +114,40 @@ export async function fetchLogBacklog(): Promise<string[]> {
 // scoped to while the pane is open).
 export function stopLogCapture(): void {
   void window.__TAURI__?.core.invoke('wh_log_stop_capture');
+}
+
+// A windhawk:// link, as the shell parsed it out of a launch's command line
+// (`windhawk://mods/<id>` opens that mod in the online browser). The shell has
+// already checked the id against the mod-id grammar; the page only ever puts it
+// in a route. Two deliveries, one shape: a launch that started the app leaves
+// the link in a global before this bundle runs (the cold path), and a launch
+// forwarded to the running app arrives as a raw Tauri event (the warm path).
+export type DeepLink = { kind: 'mod'; modId: string };
+
+function isDeepLink(value: unknown): value is DeepLink {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { kind?: unknown }).kind === 'mod' &&
+    typeof (value as { modId?: unknown }).modId === 'string'
+  );
+}
+
+// The link the app was started with, if any, read before the router is created
+// so the first page is the mod's. Clearing it is what keeps a second document
+// load (there is none in the ordinary run) from replaying it.
+export function takeInitialDeepLink(): DeepLink | null {
+  const value = window.__WINDHAWK_DEEP_LINK__;
+  delete window.__WINDHAWK_DEEP_LINK__;
+  return isDeepLink(value) ? value : null;
+}
+
+// A link forwarded by a launch while the app is running; the shell has already
+// brought the window to the front.
+export function listenDeepLink(
+  handler: (link: DeepLink) => void
+): Promise<UnlistenFn> | undefined {
+  return window.__TAURI__?.event.listen<DeepLink>('wh-deep-link', (event) => {
+    handler(event.payload);
+  });
 }

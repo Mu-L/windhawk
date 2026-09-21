@@ -11,8 +11,8 @@
 //! enter this pure leaf crate).
 //!
 //! The LCG arithmetic constants below are ARBITRARY: only the 6-digit suffix
-//! RANGE and the `<id>_<ver>_<digits>.dll` FORMAT are a contract (recognized by
-//! `ends_with_random_suffix` and the catalog parity). Uniqueness in production
+//! RANGE and the `<id>_<ver>_<digits>.dll` FORMAT are a contract (what
+//! `ends_with_random_suffix` recognizes). Uniqueness in production
 //! comes from those collision loops, not from the generator's quality, so any
 //! deterministic-under-test generator would do; do not mistake these for tuned
 //! or TS-derived values (the TS uses `Math.random()`).

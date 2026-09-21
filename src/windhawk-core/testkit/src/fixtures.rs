@@ -1,5 +1,6 @@
-//! Helpers for the shared contract fixture corpus (core-internals.md
-//! section 9.3).
+//! Helpers for the shared contract fixture corpus: one directory per command,
+//! holding that command's scenario captures (request, response, events) as
+//! JSON.
 
 use std::path::PathBuf;
 

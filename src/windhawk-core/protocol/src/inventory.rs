@@ -67,10 +67,28 @@ pub const COMMAND_INVENTORY: &[&str] = &[
     "startInstallDevTools",
     // Editor support (additive).
     "getCompileFlags",
-    // User-data export/import (additive). Reference-only inspect and export land
-    // in phase 1; the async importUserData follows in phase 2. Additive like
-    // getCompileFlags, so contractVersion stays 0.1.0.
+    // User-data export/import (additive): reference-only inspect and export, and
+    // the async importUserData. Additive like getCompileFlags, so contractVersion
+    // stays 0.1.0.
     "exportUserData",
     "inspectUserData",
     "importUserData",
+    // Mod settings data types (additive). One read of the options a mod writes
+    // at runtime for its `$dynamicSelect` settings. Additive like
+    // getCompileFlags, so contractVersion stays 0.1.0.
+    "getModDynamicSelectOptions",
+    // Host query (additive): the installed font families for a fontFamily
+    // setting's completion. Additive like getCompileFlags, so contractVersion
+    // stays 0.1.0.
+    "listFontFamilies",
+    // Host capture (additive): one keyboard chord recorded behind a hotkey
+    // setting's badge, async with the held modifiers as progress. Additive like
+    // getCompileFlags, so contractVersion stays 0.1.0.
+    "captureHotkey",
+    // Review votes (additive): the profile write behind a review's upvote, the
+    // one that takes it back, and the read of what a mod has been voted on.
+    // Additive like getCompileFlags, so contractVersion stays 0.1.0.
+    "voteModReview",
+    "retractModReviewVote",
+    "getModReviewVotes",
 ];

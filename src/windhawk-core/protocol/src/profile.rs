@@ -222,8 +222,7 @@ pub struct SyncCatalogToProfileParams {
 /// `mods.*.metadata.version`), but the caller holds the FULL catalog as the raw
 /// `Value` `fetchCatalog` returned verbatim. Carrying it opaquely keeps the
 /// request byte-identical to the old `json!({ catalog })` and never silently
-/// drops a catalog field the core may start reading - a drop the output-only
-/// parity self-diff could not catch.
+/// drops a catalog field the core may start reading.
 #[derive(Serialize, Debug, Clone)]
 pub struct SyncCatalogToProfileRequest {
     pub catalog: serde_json::Value,

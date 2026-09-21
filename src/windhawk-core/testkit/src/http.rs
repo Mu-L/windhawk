@@ -1,10 +1,10 @@
-//! In-memory `Http` port fake (core-internals.md section 3.3, testkit). A
-//! behavioral fake: it records the requests it was asked to make and replays a
-//! canned response per URL (status, body, content length) through the sink,
-//! splitting the body into chunks so progress events fire. Supports a transport
-//! fault (the `REPO_UNREACHABLE` paths) and two cancellation modes - block
-//! until canceled, and cancel once the body is delivered - so both download
-//! cancellation windows are deterministic without a real socket.
+//! In-memory `Http` port fake. A behavioral fake: it records the requests it
+//! was asked to make and replays a canned response per URL (status, body,
+//! content length) through the sink, splitting the body into chunks so
+//! progress events fire. Supports a transport fault (the `REPO_UNREACHABLE`
+//! paths) and two cancellation modes - block until canceled, and cancel once
+//! the body is delivered - so both download cancellation windows are
+//! deterministic without a real socket.
 //!
 //! A response given an `ETag` also revalidates like a server does: a request
 //! whose `If-None-Match` matches it is answered `304` with no body, so the

@@ -1,4 +1,4 @@
-//! A stub clang++ for the CLI's compile-bearing integration tests. It stands in
+//! A stub clang++ for testing the CLI's compile-bearing commands. It stands in
 //! for the real compiler at `<CompilerPath>/bin/clang++.exe` so `mod install` /
 //! `mod compile` / `mod update` can be driven without a toolchain, and doubles
 //! as the `update run` installer payload.

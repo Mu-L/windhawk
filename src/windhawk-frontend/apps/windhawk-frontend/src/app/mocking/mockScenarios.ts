@@ -19,9 +19,14 @@
  *   host's does, so an error it carries surfaces exactly as a real one would.
  */
 
+import { ReviewPostError } from '@app/panel/shared/reviews/reviewPostError';
 import { ALL_VERSIONS, formatSuppression } from '@app/webviewIPCMessages';
 import type { MockDataRegistry } from './MockRegistry';
-import { defaultMockData } from './MockRegistry';
+import {
+  defaultMockData,
+  mockAnnotatedInitialSettings,
+  mockAnnotatedModSettings,
+} from './MockRegistry';
 
 const SCENARIO_PARAM = 'mock';
 const SCENARIO_STORAGE_KEY = 'windhawk-mock-scenario';
@@ -245,6 +250,52 @@ export const mockScenarios: Record<string, MockScenario> = {
     },
   },
 
+  'annotated-settings': {
+    description:
+      "Every mod's settings block is the annotated sample mod's, on the repository preview as well as the settings tab.",
+    data: {
+      // The one block on both sides - the installed mod's settings tab and the
+      // repository preview of it - so the controls and their read-only
+      // renderings are drawn from the same declarations. The default machine
+      // has the block on one installed mod only, which puts it in front of no
+      // preview.
+      installedModSourceData: (modId: string) => ({
+        ...defaultMockData.installedModSourceData(modId),
+        initialSettings: mockAnnotatedInitialSettings,
+      }),
+      modVersionSource: (modId: string, version?: string) => ({
+        ...defaultMockData.modVersionSource(modId, version),
+        initialSettings: mockAnnotatedInitialSettings,
+      }),
+      modSettings: () => mockAnnotatedModSettings,
+    },
+  },
+
+  'hotkey-capture-unavailable': {
+    description:
+      "The annotated sample mod on a host that cannot record shortcuts, so a hotkey's badge falls back to its manual editor.",
+    // The same block as annotated-settings: the badge under test is that mod's.
+    data: {
+      installedModSourceData: (modId: string) => ({
+        ...defaultMockData.installedModSourceData(modId),
+        initialSettings: mockAnnotatedInitialSettings,
+      }),
+      modSettings: () => mockAnnotatedModSettings,
+    },
+    replies: {
+      // What a host answers a capture with when it cannot start one: no
+      // shortcut and no reason it ended, but the error - an older core not
+      // knowing the command, or a keyboard hook that could not be installed.
+      captureHotkey: () => ({
+        hotkey: null,
+        error: {
+          code: 'HOTKEY_CAPTURE_UNAVAILABLE',
+          message: 'hotkey capture: SetWindowsHookExW failed: Access is denied.',
+        },
+      }),
+    },
+  },
+
   'command-failure': {
     description: 'Every mod command the host is asked to run fails.',
     replies: {
@@ -318,6 +369,92 @@ export const mockScenarios: Record<string, MockScenario> = {
         'IMPORT_FAILED',
         'The archive could not be imported.'
       ),
+    },
+  },
+
+  'review-post-failure': {
+    description:
+      'The update server turns every review post away: too many from this address.',
+    data: {
+      // The refusal the server explains, in its words, which the form draws as
+      // they are. The status is the rate limit's.
+      postModReview: () =>
+        Promise.reject(
+          new ReviewPostError(429, 'Too many reviews, try again later')
+        ),
+    },
+  },
+
+  'review-votes-failure': {
+    description:
+      'A host over a core from before the vote commands: all three are unknown to it.',
+    replies: {
+      // What an older DLL's refusal arrives as: the read's list is empty with
+      // the error attached, which the modal takes as no voting at all.
+      getModReviewVotes: (reply) => ({
+        ...reply,
+        votes: [],
+        error: {
+          code: 'INVALID_REQUEST',
+          message: 'unknown command: getModReviewVotes',
+        },
+      }),
+      voteModReview: (reply) => ({
+        ...reply,
+        votes: [],
+        succeeded: false,
+        error: {
+          code: 'INVALID_REQUEST',
+          message: 'unknown command: voteModReview',
+        },
+      }),
+      retractModReviewVote: (reply) => ({
+        ...reply,
+        votes: [],
+        succeeded: false,
+        error: {
+          code: 'INVALID_REQUEST',
+          message: 'unknown command: retractModReviewVote',
+        },
+      }),
+    },
+  },
+
+  'review-undo-failure': {
+    description:
+      'A host over a core that takes a vote but not one back: the retraction alone is unknown to it.',
+    replies: {
+      // The vote stands as cast: the modal draws it final and says the undo
+      // did not go.
+      retractModReviewVote: (reply) => ({
+        ...reply,
+        votes: [],
+        succeeded: false,
+        error: {
+          code: 'INVALID_REQUEST',
+          message: 'unknown command: retractModReviewVote',
+        },
+      }),
+    },
+  },
+
+  'reviews-unavailable': {
+    description: "A mod's reviews document cannot be fetched.",
+    data: {
+      modReviews: () => {
+        throw new Error('The reviews document could not be fetched.');
+      },
+    },
+  },
+
+  'reviews-over-network': {
+    description:
+      'The reviews document and the post go out over the network instead of being answered here.',
+    // For a journey that answers the real requests itself with an intercept,
+    // which is what proves the request's shape: the URL, the method, the
+    // headers and the body a server would see.
+    data: {
+      commentsOverNetwork: true,
     },
   },
 };

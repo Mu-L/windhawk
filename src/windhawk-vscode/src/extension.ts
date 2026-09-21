@@ -9,6 +9,7 @@ import {
 	AppSettings,
 	AppUISettings,
 	AsyncOperation,
+	CaptureHotkeyResult,
 	CompileInstalledModResult,
 	CompilerError,
 	CompilerKilled,
@@ -48,7 +49,11 @@ import {
 	ForkModData,
 	GetFeaturedModsReplyData,
 	GetInstalledModsReplyData,
+	GetModReviewVotesData,
+	GetModReviewVotesReplyData,
 	GetModConfigData,
+	GetModDynamicSelectOptionsData,
+	GetModDynamicSelectOptionsReplyData,
 	GetModSettingsData,
 	GetModSourceDataData,
 	GetModVersionsData,
@@ -61,19 +66,27 @@ import {
 	InspectUserDataReplyData,
 	InstallModData,
 	InstallModReplyData,
+	CaptureHotkeyReplyData,
 	InstalledModProfileFields,
+	ListFontFamiliesReplyData,
+	PickFilePathData,
+	PickFilePathReplyData,
+	RetractModReviewVoteData,
+	RetractModReviewVoteReplyData,
 	SetModSettingsData,
 	StartUpdateReplyData,
 	UpdateAppSettingsData,
 	UpdateInstalledModsDetailsData,
 	UpdateModConfigData,
 	UpdateModRatingData,
+	VoteModReviewData,
+	VoteModReviewReplyData,
 	WireError
 } from './webviewIPCMessages';
 
 type AppUtils = {
 	core: WindhawkCore,
-	editorWorkspace: EditorWorkspaceUtils
+	editorWorkspace: EditorWorkspaceUtils,
 };
 
 // Set to a local folder to use a dev environment.
@@ -254,6 +267,9 @@ class WindhawkPanel {
 	private _alwaysCompileModsLocally = false;
 	private _currentUpdateOp: AsyncOperation<void> | null = null;
 	private _currentImportOp: AsyncOperation<ImportUserDataResult> | null = null;
+	// The hotkey capture in flight: one at a time, like the update, since the core
+	// ends the running one when another starts.
+	private _currentHotkeyCaptureOp: AsyncOperation<CaptureHotkeyResult> | null = null;
 	// The in-flight installMod / compileMod operations, keyed by the mod each was
 	// started for. Unlike the update and the import there can be several at once -
 	// one per mod card - so a cancel names the mod it means and these are maps, not
@@ -405,7 +421,7 @@ class WindhawkPanel {
 			// worker-src. Both directives need blob: for the worker to start.
 			`script-src ${webview.cspSource} blob:`,
 			`worker-src ${webview.cspSource} blob:`,
-			`connect-src ${webview.cspSource} https://mods.windhawk.net https://ramensoftware.com`,
+			`connect-src ${webview.cspSource} https://mods.windhawk.net https://update.windhawk.net https://ramensoftware.com`,
 			`font-src ${webview.cspSource}`
 		];
 
@@ -775,6 +791,117 @@ class WindhawkPanel {
 			webviewIPC.setModSettingsReply(this._webview, message.messageId, {
 				modId: data.modId,
 				succeeded
+			});
+		},
+		getModDynamicSelectOptions: async message => {
+			const data: GetModDynamicSelectOptionsData = message.data;
+
+			let options: GetModDynamicSelectOptionsReplyData['options'] = {};
+			try {
+				options = await this._utils.core.getModDynamicSelectOptions(data.modId);
+			} catch (e) {
+				reportException(e);
+			}
+
+			webviewIPC.getModDynamicSelectOptionsReply(this._webview, message.messageId, {
+				modId: data.modId,
+				options
+			});
+		},
+		// The native Open picker behind a filePath or folderPath setting's Browse
+		// button: a file input inside the webview yields no filesystem path, so the
+		// host picks.
+		pickFilePath: async message => {
+			const data: PickFilePathData = message.data;
+
+			let reply: PickFilePathReplyData;
+			try {
+				const uris = await vscode.window.showOpenDialog({
+					canSelectMany: false,
+					canSelectFiles: !data.folder,
+					canSelectFolders: !!data.folder,
+					openLabel: 'Select',
+					// Start at the setting's current value where it exists; the dialog
+					// opens where VSCode defaults to otherwise.
+					defaultUri: pickerStartUri(data.currentPath),
+				});
+				reply = !uris || uris.length === 0
+					// A dismissed dialog is a benign no-op.
+					? { canceled: true }
+					: { path: uris[0].fsPath };
+			} catch (e) {
+				reportException(e);
+				reply = {};
+			}
+
+			webviewIPC.pickFilePathReply(this._webview, message.messageId, reply);
+		},
+		// The installed font families behind a fontFamily setting's completion,
+		// enumerated by the core per request (milliseconds; the webview holds the
+		// reply for the settings editor's lifetime). A listing that fails answers
+		// an empty list, and the control takes free text.
+		listFontFamilies: async message => {
+			let reply: ListFontFamiliesReplyData;
+			try {
+				reply = { families: await this._utils.core.listFontFamilies() };
+			} catch (e) {
+				reportException(e);
+				reply = { families: [] };
+			}
+
+			webviewIPC.listFontFamiliesReply(this._webview, message.messageId, reply);
+		},
+		// The hotkey capture behind a hotkey setting's badge: the core takes every
+		// key ahead of Windows until a shortcut is pressed, another window comes to
+		// the front, or 15 seconds pass; the held modifiers are pushed as events
+		// along the way and the reply lands when the capture ends. A start the
+		// core refuses - a windhawk-core.dll from before the command, a keyboard
+		// hook that could not be installed - answers null with the error attached
+		// rather than a notification: the webview flips to its manual editor on
+		// it and says so itself, and the raw refusal is nothing to act on.
+		captureHotkey: async message => {
+			let reply: CaptureHotkeyReplyData;
+			const captureOp = this._utils.core.captureHotkey({
+				onModifiers: modifiers => {
+					webviewIPC.hotkeyCaptureProgress(this._webview, { modifiers });
+				},
+			});
+			this._currentHotkeyCaptureOp = captureOp;
+
+			try {
+				reply = await captureOp.result;
+			} catch (e) {
+				console.error(e);
+				reply = {
+					hotkey: null,
+					error: {
+						code: e instanceof CoreDllError ? e.code : 'INTERNAL',
+						message: e instanceof Error ? e.message : String(e),
+					},
+				};
+			} finally {
+				if (this._currentHotkeyCaptureOp === captureOp) {
+					this._currentHotkeyCaptureOp = null;
+				}
+			}
+
+			webviewIPC.captureHotkeyReply(this._webview, message.messageId, reply);
+		},
+		cancelCaptureHotkey: message => {
+			let signaled = false;
+			try {
+				// cancel() of a finished (or never-started) capture is a harmless
+				// no-op returning false, like cancelUpdate. The captureHotkey reply
+				// still arrives, as canceled.
+				if (this._currentHotkeyCaptureOp?.cancel()) {
+					signaled = true;
+				}
+			} catch (e) {
+				reportException(e);
+			}
+
+			webviewIPC.cancelCaptureHotkeyReply(this._webview, message.messageId, {
+				signaled
 			});
 		},
 		getModConfig: async message => {
@@ -1173,6 +1300,79 @@ class WindhawkPanel {
 				rating: data.rating,
 				succeeded
 			});
+		},
+		// The upvote behind a review or a reply: a profile write the core answers
+		// with the mod's whole list of votes. The failure rides the reply as well
+		// as the notification - a windhawk-core.dll from before the command
+		// refuses it as unknown, and the webview reads the error as no voting.
+		voteModReview: async message => {
+			const data: VoteModReviewData = message.data;
+
+			let reply: VoteModReviewReplyData;
+			try {
+				const votes = await this._utils.core.voteModReview(data.modId, data.reviewId);
+				reply = { modId: data.modId, votes, succeeded: true };
+			} catch (e) {
+				reportException(e);
+				reply = {
+					modId: data.modId,
+					votes: [],
+					succeeded: false,
+					error: {
+						code: e instanceof CoreDllError ? e.code : 'INTERNAL',
+						message: e instanceof Error ? e.message : String(e),
+					},
+				};
+			}
+
+			webviewIPC.voteModReviewReply(this._webview, message.messageId, reply);
+		},
+		// The vote taken back: a profile write the core answers with the list
+		// after it. On a failure the vote stands, and the error rides the reply
+		// so the webview can say so - a windhawk-core.dll with the vote but not
+		// the retraction refuses it as unknown.
+		retractModReviewVote: async message => {
+			const data: RetractModReviewVoteData = message.data;
+
+			let reply: RetractModReviewVoteReplyData;
+			try {
+				const votes = await this._utils.core.retractModReviewVote(data.modId, data.reviewId);
+				reply = { modId: data.modId, votes, succeeded: true };
+			} catch (e) {
+				reportException(e);
+				reply = {
+					modId: data.modId,
+					votes: [],
+					succeeded: false,
+					error: {
+						code: e instanceof CoreDllError ? e.code : 'INTERNAL',
+						message: e instanceof Error ? e.message : String(e),
+					},
+				};
+			}
+
+			webviewIPC.retractModReviewVoteReply(this._webview, message.messageId, reply);
+		},
+		getModReviewVotes: async message => {
+			const data: GetModReviewVotesData = message.data;
+
+			let reply: GetModReviewVotesReplyData;
+			try {
+				const votes = await this._utils.core.getModReviewVotes(data.modId);
+				reply = { modId: data.modId, votes };
+			} catch (e) {
+				reportException(e);
+				reply = {
+					modId: data.modId,
+					votes: [],
+					error: {
+						code: e instanceof CoreDllError ? e.code : 'INTERNAL',
+						message: e instanceof Error ? e.message : String(e),
+					},
+				};
+			}
+
+			webviewIPC.getModReviewVotesReply(this._webview, message.messageId, reply);
 		},
 		getAppSettings: async message => {
 			let appSettings: Partial<AppSettings> = {};
@@ -1953,6 +2153,15 @@ function defaultBackupFileName(): string {
 		`${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}-` +
 		`${p(now.getHours())}h${p(now.getMinutes())}m${p(now.getSeconds())}-windhawk-backup.json`
 	);
+}
+
+// Where a picker opens for a setting's current value: the value itself when it
+// is an absolute path, else undefined so the picker opens where VSCode defaults
+// to. VSCode drops a defaultUri that does not exist before showing the dialog,
+// so a hand-typed or foreign-machine value needs no check here - and a
+// synchronous check would block the extension host on a dead network share.
+function pickerStartUri(filePath: string | undefined): vscode.Uri | undefined {
+	return filePath && path.isAbsolute(filePath) ? vscode.Uri.file(filePath) : undefined;
 }
 
 // Read a picked archive file, refusing one past the core's cap by its SIZE first:

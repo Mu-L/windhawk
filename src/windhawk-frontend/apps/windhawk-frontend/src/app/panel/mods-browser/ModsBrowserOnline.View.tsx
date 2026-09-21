@@ -1,7 +1,7 @@
 import { AppUISettingsContext } from '@app/appUISettings';
 import { DropdownModal, InputWithContextMenu } from '@app/components/InputWithContextMenu';
 import { useNavigationBlock } from '@app/navigationBlock';
-import { isMobile } from '@app/utils';
+import { formatCompactCount, isMobile } from '@app/utils';
 import type { ModMetadata, RepositoryDetails } from '@app/webviewIPCMessages';
 import { faFilter, faSearch, faSort } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
@@ -9,24 +9,20 @@ import { Badge, Button, Empty, type InputRef, Result, Spin } from 'antd';
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useInfiniteScroll } from 'react-infinite-scroll-component';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import styled, { css } from 'styled-components';
 import { ModDetails } from '../mod-details';
 import type {
-  ExtensionProps,
+  ModDetailsAppProps,
   ModActionCallbacks,
-} from '../mod-details/ModDetails.Extension';
+} from '../mod-details/ModDetails.App';
 import { ModCard } from '../shared';
 import { type InstalledMods } from '../shared/installedMod';
 import { modHasUpdateOnOffer } from '../shared/updateOffer';
 import useKeyboardShortcut, { isTypingTarget } from '../shared/useKeyboardShortcut';
 import { type ModOperation } from './modOperation';
 import ModOperationModal from './ModOperationModal';
-
-// Use webpack constant for conditional compilation
-declare const WEBPACK_IS_WEBSITE: boolean;
-
-const MODS_PATH = WEBPACK_IS_WEBSITE ? '/mods' : '/mods-browser';
+import { isModPageFromApp, MODS_PATH } from './modsPath';
 
 const CenteredContainer = styled.div`
   display: flex;
@@ -100,27 +96,13 @@ interface FilterItemLabelProps {
   count?: number;
 }
 
-// Formats a count for display:
-// 1, 2, ..., 99, 100, ..., 999, 1K, 1.1K, ..., 9.8K, 9.9K, 10K+
-const formatBadgeCount = (count: number): string => {
-  if (count < 1000) {
-    return count.toString();
-  }
-  if (count < 10000) {
-    // Floor to the nearest 100 so e.g. 9999 stays "9.9K" rather than rounding
-    // up to "10K", which is reserved for 10000+.
-    return `${Math.floor(count / 100) / 10}K`;
-  }
-  return '10K+';
-};
-
 const FilterItemLabel = ({ label, count }: FilterItemLabelProps) => (
   <FilterItemLabelWrapper>
     <span>{label}</span>
     {count !== undefined && (
       <Badge
-        count={formatBadgeCount(count)}
-        title={count.toString()}
+        count={formatCompactCount(count)}
+        title={count.toLocaleString()}
         color='var(--whui-skeleton-base)'
         style={{
           color: 'var(--whui-text-secondary)',
@@ -348,10 +330,10 @@ export interface ModsBrowserOnlineViewProps<TMod> {
   // screens.
   installedMods?: InstalledMods | null;
 
-  // Whether installation status filter should be shown (extension mode only)
+  // Whether installation status filter should be shown (app build only)
   showInstallationFilter?: boolean;
 
-  // Extension-only (optional)
+  // App-only (optional)
   installModPending?: boolean;
   compileModPending?: boolean;
   modOperation?: ModOperation;
@@ -360,12 +342,12 @@ export interface ModsBrowserOnlineViewProps<TMod> {
   // Retry handler (different per mode)
   onRetry?: () => void;
 
-  // ModDetails props (extension-only), passed to it as they are given. The
+  // ModDetails props (app-only), passed to it as they are given. The
   // repository side is what this browser reads, and a mod it lists need not be
   // on the machine, so what puts one there is required here even though a screen
   // showing only installed mods can do without it: an absent callback takes the
   // action off the header rather than showing it as one that cannot run.
-  modDetailsExtensionProps?: ExtensionProps & {
+  modDetailsAppProps?: ModDetailsAppProps & {
     loadRepositoryData: boolean;
     actions: ModActionCallbacks &
       Required<
@@ -393,11 +375,12 @@ export function ModsBrowserOnlineView<TMod>(props: ModsBrowserOnlineViewProps<TM
     modOperation,
     onCancelModOperation,
     onRetry,
-    modDetailsExtensionProps,
+    modDetailsAppProps,
   } = props;
 
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const location = useLocation();
 
   // UI state managed internally
   const [sortingOrder, setSortingOrder] = useState('popular-top-rated');
@@ -646,6 +629,17 @@ export function ModsBrowserOnlineView<TMod>(props: ModsBrowserOnlineViewProps<TM
   const modalIsOpen = !!(installModPending || compileModPending);
 
   useNavigationBlock(modalIsOpen);
+
+  // The list hides behind any address that names a mod, and a mod the catalog
+  // does not have has no page: send that address to the list, once the catalog
+  // is in hand (a mod still being fetched is not one it lacks).
+  const catalogLacksDisplayedMod =
+    !!displayedModId && !!repositoryMods && !repositoryMods[displayedModId];
+  useEffect(() => {
+    if (catalogLacksDisplayedMod) {
+      navigate(MODS_PATH, { replace: true });
+    }
+  }, [catalogLacksDisplayedMod, navigate]);
 
   if (initialDataPending) {
     return (
@@ -897,17 +891,21 @@ export function ModsBrowserOnlineView<TMod>(props: ModsBrowserOnlineViewProps<TM
               details: getModDetails(repositoryMods[displayedModId]),
             }}
             goBack={() => {
-              // If we ever clicked on Details, go back.
-              // Otherwise, we probably arrived from a different location,
-              // go straight to the mods page.
-              if (detailsButtonClicked) {
+              // Back through the history when this page was pushed over one
+              // the reader was on in the app: by this list's own Details
+              // button, or by a link followed from another mod's page, which
+              // says so in the location's state. Reached any other way - a
+              // windhawk:// link, a cold start, the website's address bar - the
+              // page has nothing of the reader's behind it, and back leads to
+              // the list.
+              if (detailsButtonClicked || isModPageFromApp(location.state)) {
                 navigate(-1);
               } else {
                 navigate(MODS_PATH);
               }
             }}
-            // Only pass extensionProps in extension mode
-            extensionProps={modDetailsExtensionProps}
+            // Only pass appProps in the app build
+            appProps={modDetailsAppProps}
           />
         </ContentWrapper>
       )}

@@ -97,8 +97,14 @@
       }
     },
     "version": {
+      "title": "Selectează o versiune",
       "preRelease": "prelansare",
       "select": "Selectează"
+    },
+    "updates": {
+      "disableForVersion": "Omite versiunea {{version}}",
+      "disableAll": "Nu oferi niciodată actualizări",
+      "allow": "Permite actualizările"
     },
     "details": {
       "title": "Detalii",
@@ -459,6 +465,7 @@
         "overwriteWarning_one": "Un mod selectat este deja instalat și va fi suprascris.",
         "overwriteWarning_few": "{{count}} moduri selectate sunt deja instalate și vor fi suprascrise.",
         "overwriteWarning_other": "{{count}} de moduri selectate sunt deja instalate și vor fi suprascrise.",
+        "installedUnknownWarning": "Nu s-a putut verifica ce moduri sunt deja instalate, așa că unele ar putea fi suprascrise fără avertisment.",
         "noPrecompiledTitle": "Forțează compilarea locală",
         "noPrecompiledDescription": "Compilează fiecare mod local în loc să descarci build-uri precompilate.",
         "network": {

@@ -1,8 +1,7 @@
-//! In-memory `SettingsBackend` (core-internals.md section 3, testkit). A
-//! behavioral fake: it stores typed values in a map keyed by a normalized
-//! tree key, so command-level service tests run without Windows. Byte-format
-//! fidelity is the real adapters' job (verified by the fixture-replay and
-//! referee suites); this fake only models the keyed-value semantics.
+//! In-memory `SettingsBackend`. A behavioral fake: it stores typed values in
+//! a map keyed by a normalized tree key, so command-level service tests run
+//! without Windows. Byte-format fidelity is the real adapters' job; this fake
+//! only models the keyed-value semantics.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -80,8 +79,8 @@ impl FakeSettings {
         Self::default()
     }
 
-    /// Make every subsequent `open`/`remove_tree` fail with `error`
-    /// (fault injection, core-internals.md section 3).
+    /// Make every subsequent `open`/`remove_tree` fail with `error` (fault
+    /// injection).
     pub fn set_fault(&self, error: SettingsError) {
         *self.fault.lock().unwrap_or_else(|e| e.into_inner()) = Some(error);
     }

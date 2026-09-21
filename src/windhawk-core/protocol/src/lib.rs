@@ -12,11 +12,14 @@
 mod compile;
 mod envelope;
 mod error;
+mod fonts;
+mod hotkey;
 mod install;
 mod inventory;
 mod parse_mod_source;
 mod profile;
 mod repo;
+mod reviews;
 mod settings;
 mod user_data;
 
@@ -25,11 +28,15 @@ pub use compile::{
 };
 pub use envelope::{OperationEvent, RequestEnvelope, response_err, response_ok};
 pub use error::{CompileDetails, ErrorCode, OsErrorDetails, SourceLocation, WireError};
+pub use fonts::ListFontFamiliesResult;
+pub use hotkey::{
+    CaptureHotkeyProgress, CaptureHotkeyResult, HotkeyCaptureCanceled, HotkeyModifiers,
+};
 pub use install::{InstallModParams, InstallModResult};
 pub use inventory::COMMAND_INVENTORY;
 pub use parse_mod_source::{
     AppendToModIdAndNameParams, InitialSettingItem, InitialSettings, InitialSettingsValue,
-    ModMetadata, ParseModSourceParams, ParsedModSource, ParsedModSourceErrors,
+    ModMetadata, ParseModSourceParams, ParsedModSource, ParsedModSourceErrors, SettingConditions,
 };
 pub use profile::{
     AppUpdateStatus, CatalogForProfileSync, GetInstalledModDetailsParams, InstalledModListEntry,
@@ -40,11 +47,16 @@ pub use profile::{
 pub use repo::{
     FetchCatalogParams, FetchModVersionsParams, FetchRepoModSourceParams, ModVersionInfo,
 };
+pub use reviews::{
+    GetModReviewVotesParams, RetractModReviewVoteParams, ReviewVoteDto, ReviewVotesResult,
+    VoteModReviewParams,
+};
 pub use settings::{
     AppSettings, AppSettingsIntents, AppSettingsPatch, AppSettingsPatchParams, CoreFsPaths,
-    CoreInfo, DEFAULT_THEME, EngineSettings, EngineSettingsPatch, ModConfig, ModConfigPatch,
-    ModIdParams, SetModEnabledParams, SetModLoggingEnabledParams, SetModSettingsParams,
-    UpdateModConfigParams, UpdateSuppression, is_valid_suppression, parse_suppression,
+    CoreInfo, DEFAULT_THEME, DynamicSelectOption, EngineSettings, EngineSettingsPatch, ModConfig,
+    ModConfigPatch, ModIdParams, SetModEnabledParams, SetModLoggingEnabledParams,
+    SetModSettingsParams, UpdateModConfigParams, UpdateSuppression, is_valid_suppression,
+    parse_suppression,
 };
 pub use user_data::{
     ConflictPolicy, ExportOptions, ExportSummary, ExportUserDataParams, ExportUserDataResult,

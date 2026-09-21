@@ -93,9 +93,44 @@ pub struct InitialSettingItem {
     /// Display options: one single-entry `{value: label}` object per option.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<Vec<BTreeMap<String, String>>>,
+    /// `$format`: an opaque display hint the front-end interprets; the core
+    /// forwards any non-empty string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    /// `$float`: `value` is a decimal held as a string (or string array). On
+    /// the wire `true` or absent, never `false`, so an older reader sees the
+    /// plain string setting it already is.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub float: bool,
+    /// `$dynamicSelect`: the mod supplies dropdown options at runtime. On the
+    /// wire `true` or absent, like `float`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dynamic_select: bool,
+    /// `$min` / `$max`: bounds on a number item (integer or `$float`), each
+    /// the literal as written (`1`, `0.5`); absent when unset, so an older
+    /// reader sees the item it already knows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min: Option<serde_json::Number>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max: Option<serde_json::Number>,
+    /// `$showIf` / `$hideIf`: the settings the item's visibility depends on,
+    /// each by its resolved declaration path (`group.enabled`, `rows.action`:
+    /// dotted, with no array subscripts) mapped to the values under which the
+    /// entry holds, always a list, of the named setting's kind. Shown when
+    /// every `showIf` entry holds and no `hideIf` one does. Absent when unset,
+    /// so an older reader sees the item it knows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_if: Option<SettingConditions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hide_if: Option<SettingConditions>,
 }
 
 pub type InitialSettings = Vec<InitialSettingItem>;
+
+/// The entries of one `$showIf` / `$hideIf` map: a setting's declaration path
+/// to the scalar values (`Bool`, `Number` or `String`) under which the entry
+/// holds.
+pub type SettingConditions = BTreeMap<String, Vec<InitialSettingsValue>>;
 
 /// Per-section error strings of `ParsedModSource`; entries are set only for
 /// sections that failed to parse (TS: properties assigned only on error).
@@ -169,6 +204,88 @@ mod tests {
             }
             other => panic!("expected settings, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn setting_item_annotations_are_present_only_when_set() {
+        let item = InitialSettingItem {
+            key: "opacity".into(),
+            value: InitialSettingsValue::String("0.85".into()),
+            name: None,
+            description: None,
+            options: None,
+            format: Some("colorArgb".into()),
+            float: true,
+            dynamic_select: false,
+            min: serde_json::Number::from_f64(0.5),
+            max: None,
+            show_if: Some(BTreeMap::from([(
+                "group.enabled".to_owned(),
+                vec![InitialSettingsValue::Bool(true)],
+            )])),
+            hide_if: None,
+        };
+        let v = serde_json::to_value(&item).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "key": "opacity",
+                "value": "0.85",
+                "format": "colorArgb",
+                "float": true,
+                "min": 0.5,
+                "showIf": {"group.enabled": [true]}
+            })
+        );
+        // A reader that omits the flags decodes them as unset.
+        let back: InitialSettingItem =
+            serde_json::from_value(serde_json::json!({"key": "k", "value": "v"})).unwrap();
+        assert_eq!(back.format, None);
+        assert!(!back.float);
+        assert!(!back.dynamic_select);
+        assert_eq!(back.min, None);
+        assert_eq!(back.max, None);
+        assert_eq!(back.show_if, None);
+        assert_eq!(back.hide_if, None);
+    }
+
+    #[test]
+    fn setting_conditions_decode_each_value_as_its_scalar() {
+        // The untagged value enum reads a condition list element by element,
+        // so a list of scalars is never mistaken for one of the array
+        // variants.
+        let back: InitialSettingItem = serde_json::from_value(serde_json::json!({
+            "key": "k", "value": "v",
+            "showIf": {"mode": ["a", "b"], "count": [1, 2]},
+            "hideIf": {"enabled": [false]}
+        }))
+        .unwrap();
+        assert_eq!(
+            back.show_if,
+            Some(BTreeMap::from([
+                (
+                    "count".to_owned(),
+                    vec![
+                        InitialSettingsValue::Number(1.into()),
+                        InitialSettingsValue::Number(2.into())
+                    ]
+                ),
+                (
+                    "mode".to_owned(),
+                    vec![
+                        InitialSettingsValue::String("a".into()),
+                        InitialSettingsValue::String("b".into())
+                    ]
+                ),
+            ]))
+        );
+        assert_eq!(
+            back.hide_if,
+            Some(BTreeMap::from([(
+                "enabled".to_owned(),
+                vec![InitialSettingsValue::Bool(false)]
+            )]))
+        );
     }
 
     #[test]

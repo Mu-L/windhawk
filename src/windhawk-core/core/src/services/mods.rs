@@ -13,10 +13,10 @@ use serde_json::{Map, Number, Value};
 use windhawk_core_domain::{ModId, extract_metadata, is_valid_flat_key};
 use windhawk_core_ports::{Files, SettingsTree, TreeValue};
 use windhawk_core_protocol::{
-    GetInstalledModDetailsParams, InstalledModListEntry, ListInstalledModsParams,
-    ListInstalledModsResult, ModConfig, ModIdParams, ModLoadError, ModMetadata,
-    SetModEnabledParams, SetModLoggingEnabledParams, SetModSettingsParams, UpdateModConfigParams,
-    is_valid_suppression,
+    DynamicSelectOption, GetInstalledModDetailsParams, InstalledModListEntry,
+    ListInstalledModsParams, ListInstalledModsResult, ModConfig, ModIdParams, ModLoadError,
+    ModMetadata, SetModEnabledParams, SetModLoggingEnabledParams, SetModSettingsParams,
+    UpdateModConfigParams, is_valid_suppression,
 };
 
 use crate::convert::metadata_to_protocol;
@@ -303,6 +303,92 @@ pub fn set_mod_settings(session: &SessionInner, params: Value) -> Result<Value, 
     check_storage_id("setModSettings", "modId", &params.mod_id)?;
     write_mod_settings(session, &params.mod_id, &params.settings)?;
     Ok(Value::Null)
+}
+
+/// The reserved local-storage name prefix under which a mod writes the options
+/// of a `$dynamicSelect` setting: `::wh_select_option::<path>::<value>`, the
+/// label as the stored string.
+const DYNAMIC_SELECT_OPTION_PREFIX: &str = "::wh_select_option::";
+
+/// Decode a local-storage value name against the dynamic-option pattern:
+/// `(path, value)` for a well-formed name, `None` for anything else - a name
+/// without the prefix (the mod's other local values), a prefixed name with no
+/// `::` after the path, or an empty path. The value may be empty: `""` is a
+/// value a selection can store, as an empty `$options` key is. The path is
+/// colon-free by the parameter-key charset, so the split is at the FIRST `::`
+/// past the prefix, and the value keeps any `::` of its own.
+fn parse_dynamic_option_name(name: &str) -> Option<(&str, &str)> {
+    let (path, value) = name
+        .strip_prefix(DYNAMIC_SELECT_OPTION_PREFIX)?
+        .split_once("::")?;
+    (!path.is_empty()).then_some((path, value))
+}
+
+/// The label a stored value carries: a string verbatim, an int as its decimal
+/// text (what the INI backend would have read anyway), nothing for a binary.
+fn dynamic_option_label(value: TreeValue) -> Option<String> {
+    match value {
+        TreeValue::Str(s) => Some(s),
+        TreeValue::Int(i) => Some(i.to_string()),
+        TreeValue::Binary(_) => None,
+    }
+}
+
+/// Read the options a mod wrote for its `$dynamicSelect` settings out of its
+/// local-storage tree, grouped by setting path. Paths and the entries under
+/// each keep the tree's enumeration order - the order the mod wrote them, which
+/// is the one ordering a device list and a "Small / Medium / Large" list can
+/// both be right under. An empty label is an absent option: it is how a mod
+/// retires an entry it wrote earlier, and it keeps a half-written entry (name
+/// set, label not yet) out of the dropdown. Nothing here reads the mod's
+/// source: whether a path names a `$dynamicSelect` item is the consumer's
+/// lookup, so a mod whose settings block fails to parse still answers. An
+/// absent tree opens as empty in both backends and reads as no options.
+fn read_dynamic_select_options(
+    session: &SessionInner,
+    mod_id: &str,
+) -> Result<Vec<(String, Vec<DynamicSelectOption>)>, CoreError> {
+    let storage = session.storage();
+    let tree = open_tree(storage, &storage.mod_local_storage_tree(mod_id), false)?;
+    let mut groups: Vec<(String, Vec<DynamicSelectOption>)> = Vec::new();
+    for (name, stored) in tree.enum_values().wire()? {
+        let Some((path, value)) = parse_dynamic_option_name(&name) else {
+            continue;
+        };
+        let Some(label) = dynamic_option_label(stored).filter(|label| !label.is_empty()) else {
+            continue;
+        };
+        let slot = match groups.iter().position(|(p, _)| p == path) {
+            Some(slot) => slot,
+            None => {
+                groups.push((path.to_owned(), Vec::new()));
+                groups.len() - 1
+            }
+        };
+        groups[slot].1.push(DynamicSelectOption {
+            value: value.to_owned(),
+            label,
+        });
+    }
+    Ok(groups)
+}
+
+/// `getModDynamicSelectOptions`: the `LocalStorage` tree's dynamic options as a
+/// setting-path -> options object, `{}` when the mod wrote none.
+pub fn get_mod_dynamic_select_options(
+    session: &SessionInner,
+    params: Value,
+) -> Result<Value, CoreError> {
+    let params: ModIdParams = decode_params("getModDynamicSelectOptions", params)?;
+    check_storage_id("getModDynamicSelectOptions", "modId", &params.mod_id)?;
+    let mut result = Map::new();
+    for (path, options) in read_dynamic_select_options(session, &params.mod_id)? {
+        result.insert(
+            path,
+            to_value_result("getModDynamicSelectOptions", &options)?,
+        );
+    }
+    Ok(Value::Object(result))
 }
 
 /// `setModLoggingEnabled`: the scoped single-field `LoggingEnabled` write
@@ -788,5 +874,53 @@ fn delete_file_if_present(files: &dyn Files, path: &Path) -> Result<(), CoreErro
         Ok(()) => Ok(()),
         Err(e) if e.is_not_found() => Ok(()),
         Err(e) => Err(file_err(e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dynamic_option_names_decode_at_the_first_separator_past_the_prefix() {
+        let parse = parse_dynamic_option_name;
+        assert_eq!(
+            parse("::wh_select_option::outputDevice::speakers"),
+            Some(("outputDevice", "speakers"))
+        );
+        // A nested and an object-array path are one segment each to the split.
+        assert_eq!(
+            parse("::wh_select_option::audio.device::hp"),
+            Some(("audio.device", "hp"))
+        );
+        // The value keeps every `::` of its own.
+        assert_eq!(
+            parse("::wh_select_option::dev::usb::0483:5740"),
+            Some(("dev", "usb::0483:5740"))
+        );
+        // An empty value is a value, as an empty `$options` key is.
+        assert_eq!(parse("::wh_select_option::dev::"), Some(("dev", "")));
+
+        // Not an option: no prefix (the mod's other local values), the prefix
+        // alone, a path with no value separator, an empty path.
+        for name in [
+            "LastDevice",
+            "wh_select_option::dev::a",
+            "::wh_select_option::",
+            "::wh_select_option::dev",
+            "::wh_select_option::::a",
+        ] {
+            assert_eq!(parse(name), None, "{name:?}");
+        }
+    }
+
+    #[test]
+    fn dynamic_option_labels_follow_the_stored_type() {
+        assert_eq!(
+            dynamic_option_label(TreeValue::Str("Speakers".into())),
+            Some("Speakers".into())
+        );
+        assert_eq!(dynamic_option_label(TreeValue::Int(-2)), Some("-2".into()));
+        assert_eq!(dynamic_option_label(TreeValue::Binary(vec![1])), None);
     }
 }

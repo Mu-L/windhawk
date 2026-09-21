@@ -271,11 +271,10 @@ fn install_mod_body(
 }
 
 /// The locked commit section of `install_mod_body`, extracted so the
-/// load-bearing side-effect ORDERING lives in one named place. The fixture and
-/// parity checks compare the FINAL state, not the write order, so a silent
-/// reorder of these effects would slip past them - it is pinned instead by a
-/// dedicated end-to-end ordering test. Runs under the caller's keyed-lock
-/// guard(s) (held across this call). The order is load-bearing: read the OLD
+/// load-bearing side-effect ORDERING lives in one named place where a test can
+/// pin it: a check of the FINAL state alone would let a silent reorder of these
+/// effects slip past. Runs under the caller's keyed-lock guard(s) (held across
+/// this call). The order is load-bearing: read the OLD
 /// source's engine settings BEFORE the source writes below dispose of it;
 /// rename; the config-existed check AFTER the rename and BEFORE the config
 /// write; migrate settings; write the source; on a rename delete the old source

@@ -2,7 +2,7 @@ import { type InitialSettings } from '@app/webviewIPCMessages';
 /// #if WEBSITE
 import { ModDetailsSettingsWebsite } from './ModDetailsSettings.Website';
 /// #else
-import { ModDetailsSettingsExtension } from './ModDetailsSettings.Extension';
+import { ModDetailsSettingsApp } from './ModDetailsSettings.App';
 /// #endif
 
 interface Props {
@@ -17,7 +17,7 @@ declare const WEBPACK_IS_WEBSITE: boolean;
 function ModDetailsSettings(props: Props) {
   return WEBPACK_IS_WEBSITE
     ? <ModDetailsSettingsWebsite {...props} />
-    : <ModDetailsSettingsExtension {...props} />;
+    : <ModDetailsSettingsApp {...props} />;
 }
 
 export default ModDetailsSettings;

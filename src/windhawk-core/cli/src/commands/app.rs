@@ -3,14 +3,17 @@
 //! single setting through the preview restart gate and the post-write tray
 //! poke. The dotted-key schema, value parsing, and patch builder are the pure
 //! `validate::app_settings` helpers; this module owns the I/O (read, preview,
-//! apply, poke) and the render.
+//! apply, poke) and the render. `app capture-hotkey` records one keyboard
+//! chord through the core (the C ABI async path, the held modifiers streamed
+//! to stderr) and prints it in the form a mod's hotkey setting stores.
 
 use std::io::{self, Write};
 
 use serde_json::{Value, json};
 use windhawk_core_protocol::{
-    AppSettings, AppSettingsIntents, AppSettingsPatch, AppSettingsPatchParams, NotifyTrayParams,
-    TrayAction,
+    AppSettings, AppSettingsIntents, AppSettingsPatch, AppSettingsPatchParams,
+    CaptureHotkeyProgress, CaptureHotkeyResult, HotkeyCaptureCanceled, HotkeyModifiers,
+    NotifyTrayParams, OperationEvent, TrayAction,
 };
 
 use crate::Environment;
@@ -34,6 +37,83 @@ pub fn dispatch(
                 confirm_app_restart,
             } => set(env, &key, &value, confirm_app_restart),
         },
+        AppCommand::CaptureHotkey => capture_hotkey(env),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// app capture-hotkey
+// ---------------------------------------------------------------------------
+
+/// Record one chord. The hook the core installs takes every key while it runs,
+/// the console's Ctrl+C included, so the capture ends by the chord, a click on
+/// another window, or its own timeout; a Ctrl+C is a chord like any other.
+fn capture_hotkey(env: &Environment) -> Result<Box<dyn CommandResult>, CliError> {
+    env.logger.info("Press a shortcut...");
+    let result: CaptureHotkeyResult =
+        env.core
+            .invoke_async_as("captureHotkey", &json!({}), |event| match event {
+                OperationEvent::Progress { payload } => {
+                    // A payload this build does not decode is a newer core's;
+                    // nothing to show for it.
+                    if let Ok(progress) =
+                        serde_json::from_value::<CaptureHotkeyProgress>(payload.clone())
+                    {
+                        env.logger
+                            .info(&format!("Held: {}", held_label(progress.modifiers)));
+                    }
+                }
+                // The terminal events never reach this callback (the invoke consumes
+                // them); the catch-all keeps the match exhaustive.
+                OperationEvent::Installing
+                | OperationEvent::Completed { .. }
+                | OperationEvent::Failed { .. } => {}
+            })?;
+
+    match (result.hotkey, result.canceled) {
+        (Some(hotkey), _) => Ok(Box::new(CaptureHotkeyCliResult { hotkey })),
+        (None, canceled) => Err(CliError::cancelled(match canceled {
+            Some(HotkeyCaptureCanceled::FocusLost) => {
+                "The capture ended: another window came to the front."
+            }
+            Some(HotkeyCaptureCanceled::Timeout) => {
+                "The capture ended: no shortcut was pressed within the time allowed."
+            }
+            Some(HotkeyCaptureCanceled::Canceled) | None => "The capture was canceled.",
+        })),
+    }
+}
+
+/// The held modifiers as a person reads them (`Ctrl+Alt`), or `none`.
+fn held_label(modifiers: HotkeyModifiers) -> String {
+    let names: Vec<&str> = [
+        (modifiers.ctrl, "Ctrl"),
+        (modifiers.alt, "Alt"),
+        (modifiers.shift, "Shift"),
+        (modifiers.win, "Win"),
+    ]
+    .into_iter()
+    .filter(|(held, _)| *held)
+    .map(|(_, name)| name)
+    .collect();
+    if names.is_empty() {
+        "none".to_owned()
+    } else {
+        names.join("+")
+    }
+}
+
+struct CaptureHotkeyCliResult {
+    hotkey: String,
+}
+
+impl CommandResult for CaptureHotkeyCliResult {
+    fn json_data(&self) -> Value {
+        json!({ "hotkey": self.hotkey })
+    }
+
+    fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {
+        writeln!(out, "{}", self.hotkey)
     }
 }
 
@@ -351,6 +431,26 @@ mod render_tests {
             value: Some(json!([])),
         };
         assert_eq!(render_text(&list), "<empty list>\n");
+    }
+
+    #[test]
+    fn capture_hotkey_renders_the_stored_form_and_labels_the_held_modifiers() {
+        let result = CaptureHotkeyCliResult {
+            hotkey: "ctrl+alt+84".to_owned(),
+        };
+        assert_eq!(render_text(&result), "ctrl+alt+84\n");
+        assert_eq!(result.json_data(), json!({ "hotkey": "ctrl+alt+84" }));
+
+        assert_eq!(
+            held_label(HotkeyModifiers {
+                ctrl: true,
+                alt: false,
+                shift: true,
+                win: true,
+            }),
+            "Ctrl+Shift+Win"
+        );
+        assert_eq!(held_label(HotkeyModifiers::default()), "none");
     }
 
     #[test]

@@ -1,11 +1,16 @@
 //! `mod settings get`/`set`: read or write a mod's runtime settings, validated
-//! against the types declared in the mod source's settings block.
+//! against the types declared in the mod source's settings block; `mod
+//! settings options`: the options the mod itself wrote at runtime for its
+//! `$dynamicSelect` settings.
 
 use std::collections::BTreeSet;
 use std::io::{self, Write};
 
 use serde_json::{Map, Value, json};
-use windhawk_core_protocol::{InitialSettings, ModIdParams, SetModSettingsParams};
+use windhawk_core_host::HostError;
+use windhawk_core_protocol::{
+    DynamicSelectOption, InitialSettings, ModIdParams, SetModSettingsParams,
+};
 
 use crate::Environment;
 use crate::commands::parse::{parse_mod_source, reject_initial_settings_error};
@@ -189,12 +194,17 @@ pub(super) fn settings_set(
 
 /// Build the usage error for a key that resolves to no declared setting. The
 /// "valid keys" hint lists the declared template keys (an object array shows
-/// `items[0].child`); a trailing note spells out that the `[0]` is only a
-/// template so a reader does not read the list as "only index 0 is allowed".
+/// `items[0].child`), each with its type and, for a bounded number, its range;
+/// a trailing note spells out that the `[0]` is only a template so a reader
+/// does not read the list as "only index 0 is allowed".
 #[track_caller]
 fn unknown_key_error(id: &str, key: &str, initial_settings: &InitialSettings) -> CliError {
     let key_types = flatten_setting_key_types(initial_settings);
-    let valid_keys = key_types.keys().cloned().collect::<Vec<_>>().join("\n  ");
+    let valid_keys = key_types
+        .iter()
+        .map(|(key, ty)| format!("{key} ({})", ty.describe()))
+        .collect::<Vec<_>>()
+        .join("\n  ");
     let note = if key_types.keys().any(|k| k.contains('[')) {
         "\nArray keys accept any index; [0] shows the declared template."
     } else {
@@ -262,10 +272,116 @@ impl CommandResult for ModSettingsSetResult {
     }
 }
 
+// ---------------------------------------------------------------------------
+// mod settings options
+// ---------------------------------------------------------------------------
+
+pub(super) fn settings_options(
+    env: &Environment,
+    id: &str,
+) -> Result<Box<dyn CommandResult>, CliError> {
+    // Existence check first (exit 4 if not installed): a mod that is not
+    // installed has no local storage to read, and an empty answer would read
+    // as "no options" rather than "no such mod".
+    super::require_config(env, id)?;
+    let result: Map<String, Value> = env.core.invoke_as(
+        "getModDynamicSelectOptions",
+        &ModIdParams {
+            mod_id: id.to_owned(),
+        },
+    )?;
+    // The result is keyed by setting path, so the typed decode is per entry
+    // array; the map keeps the core's order (the order the mod wrote).
+    let mut options = Vec::with_capacity(result.len());
+    for (path, entries) in result {
+        let entries: Vec<DynamicSelectOption> =
+            serde_json::from_value(entries).map_err(HostError::from)?;
+        options.push((path, entries));
+    }
+    Ok(Box::new(ModSettingsOptionsResult {
+        id: id.to_owned(),
+        options,
+    }))
+}
+
+struct ModSettingsOptionsResult {
+    id: String,
+    options: Vec<(String, Vec<DynamicSelectOption>)>,
+}
+
+impl CommandResult for ModSettingsOptionsResult {
+    fn json_data(&self) -> Value {
+        let options: Map<String, Value> = self
+            .options
+            .iter()
+            .map(|(path, entries)| (path.clone(), crate::output::to_value(entries)))
+            .collect();
+        json!({ "id": self.id, "options": options })
+    }
+
+    fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {
+        for (path, entries) in &self.options {
+            writeln!(out, "{path}")?;
+            for entry in entries {
+                writeln!(out, "  {}: {}", entry.value, entry.label)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod render_tests {
     use super::*;
     use crate::output::render_text;
+
+    #[test]
+    fn mod_settings_options_renders_paths_with_indented_entries_in_order() {
+        let option = |value: &str, label: &str| DynamicSelectOption {
+            value: value.to_owned(),
+            label: label.to_owned(),
+        };
+        let result = ModSettingsOptionsResult {
+            id: "m".to_owned(),
+            options: vec![
+                (
+                    "outputDevice".to_owned(),
+                    vec![
+                        option("speakers", "Speakers"),
+                        option("usb::1", "USB Headset"),
+                    ],
+                ),
+                ("monitor".to_owned(), vec![option("2", "2")]),
+            ],
+        };
+        // Paths and entries in the order given (the order the mod wrote), one
+        // path per line with its entries indented beneath it.
+        assert_eq!(
+            render_text(&result),
+            "outputDevice\n  speakers: Speakers\n  usb::1: USB Headset\nmonitor\n  2: 2\n"
+        );
+        assert_eq!(
+            result.json_data(),
+            json!({
+                "id": "m",
+                "options": {
+                    "outputDevice": [
+                        { "value": "speakers", "label": "Speakers" },
+                        { "value": "usb::1", "label": "USB Headset" },
+                    ],
+                    "monitor": [{ "value": "2", "label": "2" }],
+                },
+            })
+        );
+
+        // A mod that wrote nothing prints nothing; the JSON carries `{}`.
+        let empty = ModSettingsOptionsResult {
+            id: "m".to_owned(),
+            options: Vec::new(),
+        };
+        assert_eq!(render_text(&empty), "");
+        assert_eq!(empty.json_data(), json!({ "id": "m", "options": {} }));
+    }
 
     #[test]
     fn mod_settings_get_formats_unset_and_present() {

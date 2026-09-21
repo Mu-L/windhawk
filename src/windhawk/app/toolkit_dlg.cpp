@@ -2,6 +2,7 @@
 
 #include "toolkit_dlg.h"
 
+#include "dark_mode.h"
 #include "ui_functions.h"
 
 namespace {
@@ -82,6 +83,8 @@ BOOL CToolkitDlg::OnInitDialog(CWindow wndFocus, LPARAM lInitParam) {
 
     LoadLanguageStrings();
 
+    ApplyDarkMode();
+
     return !m_dialogOptions.createInactive;
 }
 
@@ -102,6 +105,40 @@ void CToolkitDlg::OnActivate(UINT nState, BOOL bMinimized, CWindow wndOther) {
 
 void CToolkitDlg::OnDpiChanged(UINT nDpiX, UINT nDpiY, PRECT pRect) {
     ReloadMainIcon();
+}
+
+HBRUSH CToolkitDlg::OnCtlColorDlg(CDCHandle dc, CWindow wnd) {
+    if (m_darkMode) {
+        return m_darkBgBrush;
+    }
+    SetMsgHandled(FALSE);
+    return nullptr;
+}
+
+HBRUSH CToolkitDlg::OnCtlColorStatic(CDCHandle dc, CStatic wndStatic) {
+    if (m_darkMode) {
+        dc.SetTextColor(DarkMode::kTextColor);
+        dc.SetBkColor(DarkMode::kBgColor);
+        return m_darkBgBrush;
+    }
+    SetMsgHandled(FALSE);
+    return nullptr;
+}
+
+HBRUSH CToolkitDlg::OnCtlColorBtn(CDCHandle dc, CButton button) {
+    if (m_darkMode) {
+        dc.SetTextColor(DarkMode::kTextColor);
+        dc.SetBkColor(DarkMode::kBgColor);
+        return m_darkBgBrush;
+    }
+    SetMsgHandled(FALSE);
+    return nullptr;
+}
+
+void CToolkitDlg::OnSettingChange(UINT uFlags, LPCTSTR lpszSection) {
+    if (lpszSection && _wcsicmp(lpszSection, L"ImmersiveColorSet") == 0) {
+        ApplyDarkMode();
+    }
 }
 
 void CToolkitDlg::OnOK(UINT uNotifyCode, int nID, CWindow wndCtl) {
@@ -154,6 +191,27 @@ void CToolkitDlg::ReloadMainIcon() {
         Functions::GetSystemMetricsForDpiWithFallback(SM_CXSMICON, dpi),
         Functions::GetSystemMetricsForDpiWithFallback(SM_CYSMICON, dpi));
     CIcon prevMainIconSmall = SetIcon(mainIconSmall, FALSE);
+}
+
+void CToolkitDlg::ApplyDarkMode() {
+    if (!DarkMode::IsSupported()) {
+        return;
+    }
+
+    m_darkMode = DarkMode::IsActive();
+
+    DarkMode::SetDarkTitleBar(m_hWnd, m_darkMode);
+
+    if (m_darkMode && m_darkBgBrush.IsNull()) {
+        m_darkBgBrush.CreateSolidBrush(DarkMode::kBgColor);
+    }
+
+    for (HWND hChild = ::GetWindow(m_hWnd, GW_CHILD); hChild;
+         hChild = ::GetWindow(hChild, GW_HWNDNEXT)) {
+        DarkMode::SetControlTheme(hChild, m_darkMode);
+    }
+
+    InvalidateRect(nullptr, TRUE);
 }
 
 // Makes room for the explanation text: widens the dialog, wraps the text to the

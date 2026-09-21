@@ -13,7 +13,7 @@ interface Props {
   onCanNavigateAwayChange?: (canNavigateAway: () => Promise<boolean>) => void;
 }
 
-export function ModDetailsSettingsExtension({
+export function ModDetailsSettingsApp({
   modId,
   initialSettings,
   readOnly = false,
@@ -64,6 +64,7 @@ export function ModDetailsSettingsExtension({
 
   return (
     <ModDetailsSettingsView
+      modId={modId}
       initialSettings={initialSettings}
       readOnly={readOnly}
       {...editor.viewProps}

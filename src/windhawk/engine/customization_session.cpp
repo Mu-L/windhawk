@@ -259,6 +259,11 @@ CustomizationSession::MainLoopRunner::MainLoopRunner() noexcept {
     } catch (const std::exception& e) {
         LOG(L"ModConfigChangeNotification constructor failed: %S", e.what());
     }
+
+    // The queue is created lazily, and Run may first execute on a thread
+    // attach exempt thread, so the event is resolved on the constructing
+    // thread.
+    m_sessionLogonEvent = ModsManager::GetSessionLogonEvent();
 }
 
 CustomizationSession::MainLoopRunner::Result
@@ -318,9 +323,8 @@ CustomizationSession::MainLoopRunner::Run(HANDLE sessionManagerProcess,
             waitHandlesCount++;
         }
 
-        HANDLE sessionLogonEvent = ModsManager::GetSessionLogonEvent();
-        if (sessionLogonEvent) {
-            waitHandles[waitHandlesCount] = sessionLogonEvent;
+        if (m_sessionLogonEvent) {
+            waitHandles[waitHandlesCount] = m_sessionLogonEvent;
             waitHandleIds[waitHandlesCount] = WaitHandleId::kSessionLogon;
             waitHandlesCount++;
         }

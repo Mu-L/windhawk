@@ -288,6 +288,62 @@ bool DoesModExportToolModMarker(PCWSTR modName, PortableSettings& settings) {
     }
 }
 
+// What a mod's include patterns name among the processes a tool mod's host can
+// be.
+struct NamedHosts {
+    // The levels named, as a bitmask of HostLevelBit values: a host named by
+    // its own file name is that host's level, windhawk.exe is the normal one.
+    unsigned int levels = 0;
+
+    // Whether a host was named by its own file name, which a mod naming only
+    // windhawk.exe hasn't done.
+    bool byHostFileName = false;
+
+    // Whether windhawk.exe is named, which is what a legacy tool mod names.
+    bool app = false;
+};
+
+NamedHosts GetNamedHosts(const ModProcessPatterns& patterns) {
+    auto namesProcess = [&patterns](PCWSTR processFileName) {
+        return DoModPatternsMatchProcess(patterns, processFileName,
+                                         /*explicitIncludeOnly=*/true);
+    };
+
+    NamedHosts named;
+
+    for (const auto& host : ToolModProcess::kHosts) {
+        if (namesProcess(host.fileName)) {
+            named.levels |= ToolModProcess::HostLevelBit(host.level);
+            named.byHostFileName = true;
+        }
+    }
+
+    named.app = namesProcess(ToolModProcess::kAppFileName);
+    if (named.app) {
+        named.levels |=
+            ToolModProcess::HostLevelBit(ToolModProcess::HostLevel::kNormal);
+    }
+
+    return named;
+}
+
+// The levels the hosted mod named when this host was launched for it, recorded
+// by the first load decision, which runs before the mod is loaded.
+unsigned int RecordHostedModLevelsAtLaunch(unsigned int namedLevels) {
+    // No set of levels has every bit set, which leaves a value to stand for
+    // "nothing recorded yet".
+    constexpr unsigned int kUnrecorded = ~0u;
+
+    static constinit std::atomic<unsigned int> levelsAtLaunch{kUnrecorded};
+
+    unsigned int recorded = kUnrecorded;
+    if (levelsAtLaunch.compare_exchange_strong(recorded, namedLevels)) {
+        return namedLevels;
+    }
+
+    return recorded;
+}
+
 // What the mod's settings say it asks for as a tool mod, or nothing when it
 // isn't one: its includes name a windhawk-mod*.exe host outright, or
 // windhawk.exe outright with the tool mod marker in its export table. The
@@ -298,73 +354,30 @@ std::optional<ToolModProcess::ToolModInfo> GetToolModInfo(
     PCWSTR modName,
     PortableSettings& settings,
     Mod::ChangeMarker* changeMarker = nullptr) {
-    using ToolModProcess::HostLevel;
-    using ToolModProcess::HostLevelBit;
-
-    auto patterns = ReadModProcessPatterns(settings);
-
-    auto namesProcess = [&patterns](PCWSTR processFileName) {
-        return DoModPatternsMatchProcess(patterns, processFileName,
-                                         /*explicitIncludeOnly=*/true);
-    };
-
-    unsigned int namedLevels = 0;
-    for (const auto& host : ToolModProcess::kHosts) {
-        if (namesProcess(host.fileName)) {
-            namedLevels |= HostLevelBit(host.level);
-        }
-    }
-
-    bool namesApp = namesProcess(ToolModProcess::kAppFileName);
+    auto named = GetNamedHosts(ReadModProcessPatterns(settings));
 
     ToolModProcess::ToolModInfo info;
 
-    if (namedLevels) {
+    if (named.byHostFileName) {
         // A host named by its own file name needs no marker. windhawk.exe, if
         // named too, is the normal level.
-        info.requestedLevels = namedLevels;
-        if (namesApp) {
-            info.requestedLevels |= HostLevelBit(HostLevel::kNormal);
-        }
-    } else if (namesApp && DoesModExportToolModMarker(modName, settings)) {
+        info.requestedLevels = named.levels;
+    } else if (named.app && DoesModExportToolModMarker(modName, settings)) {
         // windhawk.exe and the marker, with no host named: the normal level.
-        info.requestedLevels = HostLevelBit(HostLevel::kNormal);
+        info.requestedLevels = named.levels;
     } else {
         return std::nullopt;
     }
 
     // A mod which reads -tool-mod names windhawk.exe, to stay hosted by a
     // Windhawk which knows no other host.
-    info.legacy = namesApp;
+    info.legacy = named.app;
 
     if (changeMarker) {
         *changeMarker = MakeChangeMarker(settings);
     }
 
     return info;
-}
-
-// Whether the mod's include patterns name the host of the given level, by the
-// host's own file name or, for the normal level, by windhawk.exe.
-bool DoesModNameHostLevel(const ModProcessPatterns& patterns,
-                          ToolModProcess::HostLevel level) {
-    auto namesProcess = [&patterns](PCWSTR processFileName) {
-        return DoModPatternsMatchProcess(patterns, processFileName,
-                                         /*explicitIncludeOnly=*/true);
-    };
-
-    if (level == ToolModProcess::HostLevel::kNormal &&
-        namesProcess(ToolModProcess::kAppFileName)) {
-        return true;
-    }
-
-    for (const auto& host : ToolModProcess::kHosts) {
-        if (host.level == level) {
-            return namesProcess(host.fileName);
-        }
-    }
-
-    return false;
 }
 
 // Temporary compatibility code.
@@ -3023,13 +3036,21 @@ Mod::LoadDecision Mod::GetLoadDecisionForRunningProcess(
     // launched itself is taken on its patterns, which name that program.
     if (isHostedMod) {
         if (auto hostLevel = ToolModProcess::GetCurrentHostLevel()) {
-            // The level is all that's left to ask: the host itself is where
+            // The levels are all that's left to ask: the host itself is where
             // the mod was taken for a tool mod. A host stands in for the one
-            // level its file name is, and dropping a mod which no longer names
-            // that level uninitializes it, which ends the host; the session
-            // manager launches one at a level the mod names.
-            return DoesModNameHostLevel(ReadModProcessPatterns(*settings),
-                                        *hostLevel)
+            // level its file name is, and keeps the mod only while the levels
+            // the mod names are the ones it was launched for. Dropping the mod
+            // uninitializes it, which ends the host, and the settings change
+            // which did so has the session manager launch a host at the level
+            // the mod now names.
+            unsigned int namedLevels =
+                GetNamedHosts(ReadModProcessPatterns(*settings)).levels;
+            unsigned int levelsAtLaunch =
+                RecordHostedModLevelsAtLaunch(namedLevels);
+
+            return namedLevels == levelsAtLaunch &&
+                           (namedLevels &
+                            ToolModProcess::HostLevelBit(*hostLevel))
                        ? LoadDecision::kLoad
                        : LoadDecision::kSkip;
         }

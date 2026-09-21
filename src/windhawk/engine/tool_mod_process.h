@@ -23,8 +23,11 @@
 // the levels it can run at and gets the highest of them the launch can provide,
 // falling to the next one it names when a launch fails; a mod which names only
 // levels the launch can't provide gets no host. A host drops its mod once the
-// mod stops naming that level, which ends the host, and the settings change
-// which did so asks for a host at a level the mod does name.
+// levels the mod names change, which ends the host, and the settings change
+// which did so asks for a host at the level the mod now names. The mod is
+// restarted even when the change leaves it at the level it already runs at:
+// which level it belongs at takes what the launch can provide, which a host has
+// no way to ask.
 //
 // Keeping the host alive is the mod's own job: the host is a stub whose entry
 // point does nothing but report that the engine never reached it, so the mod

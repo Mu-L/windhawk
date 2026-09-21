@@ -2,6 +2,7 @@ import { editMod, forkMod, useGetRepositoryMods } from '@app/webviewIPC';
 import { type GetRepositoryModsReplyData } from '@app/webviewIPCMessages';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
+import { useCacheRepositoryModNames } from '../mod-details/useRepositoryModName';
 import { useModOperation } from './modOperation';
 import { ModsBrowserOnlineView } from './ModsBrowserOnline.View';
 import { useCancelModOperation } from './useCancelModOperation';
@@ -21,7 +22,7 @@ interface Props {
   >;
 }
 
-export function ModsBrowserOnlineExtension({ ContentWrapper }: Props) {
+export function ModsBrowserOnlineApp({ ContentWrapper }: Props) {
   const { modId } = useParams<{ modId: string }>();
 
   const [initialDataPending, setInitialDataPending] = useState(true);
@@ -51,6 +52,10 @@ export function ModsBrowserOnlineExtension({ ContentWrapper }: Props) {
   const { getRepositoryMods, getRepositoryModsPending } =
     useGetRepositoryMods();
 
+  // The listing also names the mods a readme on this screen links to, so it is
+  // handed to the cache those links read rather than read again for them.
+  const cacheRepositoryModNames = useCacheRepositoryModNames();
+
   const refreshRepositoryMods = useCallback(async () => {
     const at = modWriteMark();
     const result = await getRepositoryMods({});
@@ -66,9 +71,17 @@ export function ModsBrowserOnlineExtension({ ContentWrapper }: Props) {
       }
     }
     setCatalogMods(result.data.mods && catalog);
+    if (result.data.mods) {
+      cacheRepositoryModNames(result.data.mods);
+    }
     applyInstalledModsListing(installed, at);
     setInitialDataPending(false);
-  }, [getRepositoryMods, modWriteMark, applyInstalledModsListing]);
+  }, [
+    getRepositoryMods,
+    modWriteMark,
+    applyInstalledModsListing,
+    cacheRepositoryModNames,
+  ]);
 
   useEffect(() => {
     void (async () => {
@@ -102,8 +115,8 @@ export function ModsBrowserOnlineExtension({ ContentWrapper }: Props) {
   );
   const getModDetails = useCallback((mod: CatalogModDetails) => mod.details, []);
 
-  // Build extension props for ModDetails (only if modId is displayed)
-  const modDetailsExtensionProps = useMemo(() => {
+  // Build app props for ModDetails (only if modId is displayed)
+  const modDetailsAppProps = useMemo(() => {
     if (!modId || !catalogMods?.[modId]) {
       return undefined;
     }
@@ -150,13 +163,13 @@ export function ModsBrowserOnlineExtension({ ContentWrapper }: Props) {
       getModMetadataEnglish={getModMetadataEnglish}
       getModDetails={getModDetails}
       installedMods={installedMods}
-      showInstallationFilter={true} // Show installation filter in extension mode
+      showInstallationFilter={true} // Show installation filter in the app build
       installModPending={installModPending}
       compileModPending={compileModPending}
       modOperation={modOperation}
       onCancelModOperation={cancelModOperation}
       onRetry={refreshRepositoryMods}
-      modDetailsExtensionProps={modDetailsExtensionProps}
+      modDetailsAppProps={modDetailsAppProps}
     />
   );
 }

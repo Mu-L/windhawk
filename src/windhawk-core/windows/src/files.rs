@@ -345,9 +345,9 @@ mod tests {
     /// write that succeeds.
     ///
     /// Only an unelevated process can ask the question - an elevated one is
-    /// admitted by the Administrators ACE, by design - so this skips otherwise
-    /// and the elevated direction is covered by the adapter integration suite,
-    /// which reads the list back off the folder instead.
+    /// admitted by the Administrators ACE, by design - so this skips otherwise;
+    /// the elevated direction can only be checked by reading the list back off
+    /// the folder.
     #[test]
     fn a_folder_created_with_the_private_descriptor_refuses_everyone_it_omits() {
         if is_elevated() {

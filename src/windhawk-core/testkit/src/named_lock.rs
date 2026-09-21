@@ -1,7 +1,7 @@
-//! In-memory `NamedLock` port (core-internals.md section 3.5, testkit). The
-//! lock only coordinates separate OS processes, so within a single test
-//! process a no-op guard is the right fake; acquisitions are recorded so a
-//! test can assert the profile read-modify-write took the lock.
+//! In-memory `NamedLock` port. The lock only coordinates separate OS
+//! processes, so within a single test process a no-op guard is the right
+//! fake; acquisitions are recorded so a test can assert the profile
+//! read-modify-write took the lock.
 
 use std::sync::{Arc, Mutex};
 

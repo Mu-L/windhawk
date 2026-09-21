@@ -31,6 +31,10 @@ class CToolkitDlg : public CDialogImpl<CToolkitDlg> {
         MSG_WM_DESTROY(OnDestroy)
         MSG_WM_ACTIVATE(OnActivate)
         MSG_WM_DPICHANGED(OnDpiChanged)
+        MSG_WM_CTLCOLORDLG(OnCtlColorDlg)
+        MSG_WM_CTLCOLORSTATIC(OnCtlColorStatic)
+        MSG_WM_CTLCOLORBTN(OnCtlColorBtn)
+        MSG_WM_SETTINGCHANGE(OnSettingChange)
         COMMAND_ID_HANDLER_EX(IDOK, OnOK)
         COMMAND_ID_HANDLER_EX(IDC_TOOLKIT_LOADED_MODS, OnLoadedMods)
         COMMAND_ID_HANDLER_EX(IDC_TOOLKIT_EXIT, OnExit)
@@ -42,6 +46,10 @@ class CToolkitDlg : public CDialogImpl<CToolkitDlg> {
     void OnDestroy();
     void OnActivate(UINT nState, BOOL bMinimized, CWindow wndOther);
     void OnDpiChanged(UINT nDpiX, UINT nDpiY, PRECT pRect);
+    HBRUSH OnCtlColorDlg(CDCHandle dc, CWindow wnd);
+    HBRUSH OnCtlColorStatic(CDCHandle dc, CStatic wndStatic);
+    HBRUSH OnCtlColorBtn(CDCHandle dc, CButton button);
+    void OnSettingChange(UINT uFlags, LPCTSTR lpszSection);
     void OnOK(UINT uNotifyCode, int nID, CWindow wndCtl);
     void OnLoadedMods(UINT uNotifyCode, int nID, CWindow wndCtl);
     void OnExit(UINT uNotifyCode, int nID, CWindow wndCtl);
@@ -50,11 +58,14 @@ class CToolkitDlg : public CDialogImpl<CToolkitDlg> {
 
     void OnFinalMessage(HWND hWnd) override;
     void ReloadMainIcon();
+    void ApplyDarkMode();
     void AdjustLayoutForExplanation();
     void PlaceWindowAtTrayArea();
 
     const DialogOptions m_dialogOptions;
     bool m_wasActive = false;
+    bool m_darkMode = false;
+    CBrush m_darkBgBrush;
     int m_explanationExtraWidth = 0;
     int m_explanationOffsetY = 0;
 };

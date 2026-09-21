@@ -1,9 +1,8 @@
-//! In-memory `Files` port (core-internals.md section 3.2, testkit). A
-//! behavioral fake: it stores file bytes keyed by path, models atomic writes
-//! as a plain insert, and hands out a monotonically increasing mtime so the
-//! profile's last-own-write bookkeeping is observable without touching disk.
-//! Byte-format and real Win32 sharing semantics are the WindowsFiles adapter's
-//! job (verified by the fixture-replay suite).
+//! In-memory `Files` port. A behavioral fake: it stores file bytes keyed by
+//! path, models atomic writes as a plain insert, and hands out a monotonically
+//! increasing mtime so the profile's last-own-write bookkeeping is observable
+//! without touching disk. Byte-format and real Win32 sharing semantics are the
+//! WindowsFiles adapter's job.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -57,7 +56,7 @@ impl FakeFiles {
     }
 
     /// Make the read-side ops (`read`/`list_dir`/`modified_ms`) fail with
-    /// `error` (fault injection, core-internals.md section 3).
+    /// `error` (fault injection).
     pub fn set_fault(&self, error: FileError) {
         *self.read_fault.lock().unwrap_or_else(|e| e.into_inner()) = Some(error);
     }

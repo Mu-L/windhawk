@@ -5,8 +5,9 @@
 //! trivially identical to the reference.
 
 use yaml_rust2::Yaml;
+use yaml_rust2::yaml::Hash;
 
-use super::{parse_annotation_key, scalar_key_to_string};
+use super::{float_literal, number_in_text, parse_annotation_key, scalar_key_to_string};
 use crate::model::{SettingItem, SettingValue};
 
 pub(super) fn validate_settings_array(items: &[Yaml]) -> Result<(), String> {
@@ -53,13 +54,19 @@ fn validate_settings_item(item: &Yaml, path: &str) -> Result<(), String> {
     if map.is_empty() {
         return Err(format!("{path} is an empty settings object"));
     }
+    // `$float` changes what a valid parameter value (and a valid `$min` /
+    // `$max`) is and may be written after them, so it is peeked ahead of the
+    // loop; each value is then checked in place, in mapping order, and no
+    // error moves. A `$float` that is not a boolean is reported by the loop
+    // when it reaches the key.
+    let float = annotation_flag(map, "float");
     let mut param: Option<(String, &Yaml)> = None;
     let mut options: Vec<(String, Vec<String>)> = Vec::new();
     for (key, value) in map.iter() {
         let key = scalar_key_to_string(key);
         let key_path = format!("{path}.{key}");
         if is_plain_param_key(&key) {
-            validate_param_value(value, &key_path)?;
+            validate_param_value(value, &key_path, float)?;
             param.get_or_insert((key_path, value));
         } else if is_annotation_key(&key, &["name", "description"]) {
             if !matches!(value, Yaml::String(_)) {
@@ -68,6 +75,27 @@ fn validate_settings_item(item: &Yaml, path: &str) -> Result<(), String> {
         } else if is_annotation_key(&key, &["options"]) {
             validate_options_value(value, &key_path)?;
             options.push((key_path, option_values(value)));
+        } else if is_exact_annotation_key(&key, "format") {
+            // Any non-empty string: the core forwards it and never interprets
+            // it, so an unknown format is a plain field downstream, not an error
+            // here. Empty is rejected only because it names nothing.
+            if !matches!(value, Yaml::String(s) if !s.is_empty()) {
+                return Err(format!("{key_path} must be a non-empty string"));
+            }
+        } else if is_exact_annotation_key(&key, "float")
+            || is_exact_annotation_key(&key, "dynamicSelect")
+        {
+            if !matches!(value, Yaml::Boolean(_)) {
+                return Err(format!("{key_path} must be a boolean"));
+            }
+        } else if is_exact_annotation_key(&key, "min") || is_exact_annotation_key(&key, "max") {
+            validate_bound(value, &key_path, float)?;
+        } else if is_exact_annotation_key(&key, "showIf") || is_exact_annotation_key(&key, "hideIf")
+        {
+            validate_conditions(value, &key_path)?;
+        } else if key.starts_with("$_") {
+            // Ignored for forward compatibility, whatever the value; a newer
+            // core may decide explicitly to handle both `$new` and `$_new`.
         } else {
             return Err(format!("{key_path} is not an allowed property"));
         }
@@ -90,7 +118,189 @@ fn validate_settings_item(item: &Yaml, path: &str) -> Result<(), String> {
             "{param_path} must be a string or array of strings to use $options"
         ));
     }
+    // `$dynamicSelect` is the same dropdown with runtime-supplied entries, so
+    // it takes the same value types.
+    if annotation_flag(map, "dynamicSelect")
+        && let Some((param_path, value)) = &param
+        && !value_takes_options(value)
+    {
+        return Err(format!(
+            "{param_path} must be a string or array of strings to use $dynamicSelect"
+        ));
+    }
+    if float
+        && let Some((param_path, value)) = &param
+        && !value_is_numeric(value, float)
+    {
+        return Err(format!(
+            "{param_path} must be a number or array of numbers to use $float"
+        ));
+    }
+    let min = annotation_value(map, "min").and_then(float_literal);
+    let max = annotation_value(map, "max").and_then(float_literal);
+    for (name, bound) in [("min", min), ("max", max)] {
+        if bound.is_some()
+            && let Some((param_path, value)) = &param
+            && !value_is_numeric(value, float)
+        {
+            return Err(format!(
+                "{param_path} must be a number or array of numbers to use ${name}"
+            ));
+        }
+    }
+    if let Some((param_path, value)) = &param {
+        if let (Some(min), Some(max)) = (min, max)
+            && min > max
+        {
+            return Err(format!(
+                "{param_path} declares a $min greater than its $max"
+            ));
+        }
+        reject_default_outside_bounds(value, param_path, min, max, float)?;
+    }
     Ok(())
+}
+
+/// The declared default must lie within the item's `$min` / `$max` bounds: a
+/// declaration whose default breaks its own rule is an authoring error to
+/// report at parse time, not a default for the editor to draw as invalid.
+/// Reads a scalar or an array the key loop has accepted as numeric (under
+/// `float`, a string holding a number included); a value that is not a number
+/// is left to the applicability check.
+fn reject_default_outside_bounds(
+    value: &Yaml,
+    path: &str,
+    min: Option<f64>,
+    max: Option<f64>,
+    float: bool,
+) -> Result<(), String> {
+    if min.is_none() && max.is_none() {
+        return Ok(());
+    }
+    let within = |v: &Yaml| {
+        leaf_number(v, float)
+            .is_none_or(|v| min.is_none_or(|min| v >= min) && max.is_none_or(|max| v <= max))
+    };
+    match value {
+        Yaml::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                if !within(item) {
+                    return Err(format!(
+                        "{path}[{i}] default is outside its $min/$max range"
+                    ));
+                }
+            }
+            Ok(())
+        }
+        _ if !within(value) => Err(format!("{path} default is outside its $min/$max range")),
+        _ => Ok(()),
+    }
+}
+
+/// A `$showIf` / `$hideIf` map, by shape alone: every key a `.`-joined setting
+/// reference, every value a boolean, an int32 integer or a string, or a
+/// non-empty list of one of those kinds. Which setting a reference names and
+/// whether the values fit it needs the whole tree, so that is
+/// `conditions::resolve_conditions`, on the typed tree.
+fn validate_conditions(value: &Yaml, path: &str) -> Result<(), String> {
+    let Yaml::Hash(map) = value else {
+        return Err(format!("{path} must be a non-empty map"));
+    };
+    if map.is_empty() {
+        return Err(format!("{path} must be a non-empty map"));
+    }
+    for (key, value) in map.iter() {
+        let reference = scalar_key_to_string(key);
+        if !is_setting_reference(&reference) {
+            return Err(format!(
+                "{path} key '{reference}' is not a setting reference"
+            ));
+        }
+        let (values, listed) = match value {
+            Yaml::Array(items) => (items.as_slice(), true),
+            _ => (std::slice::from_ref(value), false),
+        };
+        let kinds: Option<Vec<_>> = values.iter().map(condition_value_kind).collect();
+        if values.is_empty() || kinds.is_none_or(|kinds| kinds.iter().any(|k| *k != kinds[0])) {
+            return Err(format!(
+                "{path} value for '{reference}' must be a boolean, an integer, a string, or a list of one of them"
+            ));
+        }
+        // A number takes the int32 rule at its own position: a float or an
+        // out-of-range integer is never a value a setting holds.
+        for (i, value) in values.iter().enumerate() {
+            if matches!(value, Yaml::Integer(_) | Yaml::Real(_)) {
+                let value_path = if listed {
+                    format!("{path}.{reference}[{i}]")
+                } else {
+                    format!("{path}.{reference}")
+                };
+                validate_number(value, &value_path)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The kind a condition value is compared under; `None` for a value that is
+/// not a scalar.
+fn condition_value_kind(value: &Yaml) -> Option<ConditionValueKind> {
+    match value {
+        Yaml::Boolean(_) => Some(ConditionValueKind::Bool),
+        Yaml::Integer(_) | Yaml::Real(_) => Some(ConditionValueKind::Number),
+        Yaml::String(_) => Some(ConditionValueKind::String),
+        _ => None,
+    }
+}
+
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum ConditionValueKind {
+    Bool,
+    Number,
+    String,
+}
+
+/// A `$showIf` / `$hideIf` key: one or more parameter keys joined by `.`,
+/// naming a setting relative to the annotated item (resolved by
+/// `conditions`).
+fn is_setting_reference(reference: &str) -> bool {
+    reference.split('.').all(is_plain_param_key)
+}
+
+/// Whether the item sets the boolean annotation `$name` to `true`. A read, not
+/// a check: a non-boolean value reads as `false` here and is reported by the
+/// key loop at its own position.
+pub(super) fn annotation_flag(map: &Hash, name: &str) -> bool {
+    matches!(annotation_value(map, name), Some(Yaml::Boolean(true)))
+}
+
+/// The value of the exact annotation `$name` on the item, if written.
+fn annotation_value<'a>(map: &'a Hash, name: &str) -> Option<&'a Yaml> {
+    map.iter()
+        .find(|(key, _)| is_exact_annotation_key(&scalar_key_to_string(key), name))
+        .map(|(_, value)| value)
+}
+
+/// Whether a setting value is numeric - a number scalar, or an array whose
+/// every element is a number - which is what `$float` and `$min` / `$max`
+/// apply to. Under `float` a string holding a number is one too. Any other
+/// string, a boolean, or a group has no number to make decimal or to bound.
+fn value_is_numeric(value: &Yaml, float: bool) -> bool {
+    match value {
+        Yaml::Array(items) => {
+            !items.is_empty() && items.iter().all(|v| leaf_number(v, float).is_some())
+        }
+        _ => leaf_number(value, float).is_some(),
+    }
+}
+
+/// The number a leaf holds: a number literal's, or under `float` the one a
+/// string default's text resolves to.
+fn leaf_number(value: &Yaml, float: bool) -> Option<f64> {
+    match value {
+        Yaml::String(text) if float => float_literal(&number_in_text(text)?),
+        _ => float_literal(value),
+    }
 }
 
 /// Whether a `$options` dropdown is meaningful on a setting value: only a string
@@ -108,15 +318,18 @@ fn value_takes_options(value: &Yaml) -> bool {
 }
 
 /// `^[0-9A-Za-z_-]+$`
-fn is_plain_param_key(key: &str) -> bool {
+pub(super) fn is_plain_param_key(key: &str) -> bool {
     !key.is_empty()
         && key
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-/// `^\$(name|description|options)(:[a-z]{2}(-[A-Z]{2})?)?$`. The `$base[:lang]`
-/// split is the shared `super::parse_annotation_key` (the same split transform
+/// `^\$(name|description|options)(:[a-z]{2}(-[A-Z]{2})?)?$` - the localizable
+/// annotations; `$format`, `$float`, `$dynamicSelect`, `$min`, `$max`,
+/// `$showIf` and `$hideIf` are the exact-match set of
+/// `is_exact_annotation_key`. The `$base[:lang]` split
+/// is the shared `super::parse_annotation_key` (the same split transform
 /// uses); the name-set and lang-SHAPE checks below are validate-side only
 /// (transform relies on this validation having run).
 fn is_annotation_key(key: &str, names: &[&str]) -> bool {
@@ -139,6 +352,14 @@ fn is_annotation_key(key: &str, names: &[&str]) -> bool {
     }
 }
 
+/// `^\$<name>$`, with no language suffix: `$format`, `$float`, `$dynamicSelect`,
+/// `$min`, `$max`, `$showIf` and `$hideIf` govern the stored value's semantics
+/// or name other settings, not a display string, so a per-language variant
+/// (`$float:fr`) is rejected as an unknown key.
+fn is_exact_annotation_key(key: &str, name: &str) -> bool {
+    key.strip_prefix('$') == Some(name)
+}
+
 /// A number value must be an int32-ranged integer; floats and
 /// out-of-range integers are rejected (see the module doc). Callers gate
 /// on `Integer | Real`, so the `_` arm is the float (`Real`) case.
@@ -154,12 +375,57 @@ fn validate_number(value: &Yaml, path: &str) -> Result<(), String> {
     }
 }
 
+/// A `$float` number: an integer, or a real that is finite. `.inf`/`.nan` have
+/// no decimal text a mod's `wcstod` could read back.
+fn validate_float(value: &Yaml, path: &str) -> Result<(), String> {
+    match float_literal(value) {
+        Some(v) if v.is_finite() => Ok(()),
+        _ => Err(format!("{path} must be a finite number")),
+    }
+}
+
+/// A `$float` string default: text that resolves, as a bare scalar would, to
+/// a finite number, so `"0.85"` declares what `0.85` does. The spelling for a
+/// block that must also parse on a Windhawk before `$float`, which stores the
+/// string as it is where it would truncate the number.
+fn validate_float_text(text: &str, path: &str) -> Result<(), String> {
+    match number_in_text(text).and_then(|node| float_literal(&node)) {
+        Some(v) if v.is_finite() => Ok(()),
+        _ => Err(format!(
+            "{path} must be a number, or a string holding one, to use $float"
+        )),
+    }
+}
+
+/// A `$min` / `$max` value: a number under the item's own number rule, so a
+/// bound on an integer item is an int32 and one on a `$float` item a finite
+/// number.
+fn validate_bound(value: &Yaml, path: &str, float: bool) -> Result<(), String> {
+    if !matches!(value, Yaml::Integer(_) | Yaml::Real(_)) {
+        return Err(format!("{path} must be a number"));
+    }
+    if float {
+        validate_float(value, path)
+    } else {
+        validate_number(value, path)
+    }
+}
+
 /// A parameter value: boolean | int32 | string | settings array | array of
-/// int32 | array of strings | array of settings arrays.
-fn validate_param_value(value: &Yaml, path: &str) -> Result<(), String> {
+/// int32 | array of strings | array of settings arrays. Under `$float`, the
+/// number leaves take `validate_float`'s rule instead of the int32 one, and
+/// the string leaves must hold a number.
+fn validate_param_value(value: &Yaml, path: &str, float: bool) -> Result<(), String> {
+    let validate_leaf_number: fn(&Yaml, &str) -> Result<(), String> = if float {
+        validate_float
+    } else {
+        validate_number
+    };
     let items = match value {
-        Yaml::Boolean(_) | Yaml::String(_) => return Ok(()),
-        Yaml::Integer(_) | Yaml::Real(_) => return validate_number(value, path),
+        Yaml::Boolean(_) => return Ok(()),
+        Yaml::String(text) if float => return validate_float_text(text, path),
+        Yaml::String(_) => return Ok(()),
+        Yaml::Integer(_) | Yaml::Real(_) => return validate_leaf_number(value, path),
         Yaml::Array(items) => items,
         _ => return Err(format!("{path} has an unsupported value type")),
     };
@@ -170,18 +436,26 @@ fn validate_param_value(value: &Yaml, path: &str) -> Result<(), String> {
     // later reads only the first element (the shared `transform::ArrayKind`
     // concept), which is sound ONLY because this validation guarantees the
     // array is homogeneous. The number test spans Integer | Real so a float
-    // array is recognized as a number array here and rejected by
-    // `validate_number`, a case transform never sees.
+    // array is recognized as a number array here: without `$float` it is
+    // rejected by `validate_number`, a case transform never sees; with it,
+    // transform classifies the same way.
     let all_numbers = items
         .iter()
         .all(|v| matches!(v, Yaml::Integer(_) | Yaml::Real(_)));
     let all_strings = items.iter().all(|v| matches!(v, Yaml::String(_)));
     if all_strings {
+        if float {
+            for (i, v) in items.iter().enumerate() {
+                if let Yaml::String(text) = v {
+                    validate_float_text(text, &format!("{path}[{i}]"))?;
+                }
+            }
+        }
         return Ok(());
     }
     if all_numbers {
         for (i, v) in items.iter().enumerate() {
-            validate_number(v, &format!("{path}[{i}]"))?;
+            validate_leaf_number(v, &format!("{path}[{i}]"))?;
         }
         return Ok(());
     }

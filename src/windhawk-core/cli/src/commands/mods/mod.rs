@@ -1,7 +1,7 @@
 //! The `mod` group: `mod list`, `mod show`, `mod config get`/`set`, `mod
-//! settings get`/`set`, `mod enable`/`disable`, `mod remove` (sync), plus the
-//! compile-bearing async commands `mod install`, `mod update`, and `mod
-//! compile`.
+//! settings get`/`set`/`options`, `mod enable`/`disable`, `mod remove` (sync),
+//! plus the compile-bearing async commands `mod install`, `mod update`, and
+//! `mod compile`.
 
 mod config;
 mod install;
@@ -40,6 +40,7 @@ pub fn dispatch(
         ModCommand::Settings { command } => match command {
             ModSettingsCommand::Get { id, key } => settings::settings_get(env, &id, key.as_deref()),
             ModSettingsCommand::Set { id, pairs } => settings::settings_set(env, &id, &pairs),
+            ModSettingsCommand::Options { id } => settings::settings_options(env, &id),
         },
         ModCommand::Install(args) => install::install(env, args),
         ModCommand::Update(args) => install::update(env, args),

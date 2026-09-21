@@ -9,10 +9,11 @@
 @btn-default-ghost-color: @text-color;
 @btn-default-ghost-border: fade(@black, 25%);
 
-// antd's light tooltip is translucent (rgba(0,0,0,0.75)), so page content bleeds
-// through it. Make it opaque, matching the dark theme's solid tooltip.
-@tooltip-bg: #434343;
-@tooltip-arrow-color: @tooltip-bg;
+// A tooltip and a popover are one hover surface: the popover's here, white
+// with the on-surface text, so what a tooltip holds takes the theme's tokens
+// as it is. (The dark theme draws both on the tooltip's.)
+@tooltip-bg: @popover-bg;
+@tooltip-color: @popover-color;
 
 // antd's split border (#f0f0f0) barely separates the app's stacked surfaces, so
 // collapse it onto the base border color and let every light-theme border read
@@ -44,7 +45,7 @@
 // still reads against the white card surface.
 @whui-setting-unsaved: #d48806;
 // Slightly deeper than antd's #fadb14 so the stars do not wash out on the light
-// card surface. Tooltips (dark background) keep the bright value below.
+// card surface.
 @whui-rate-star: #e6c200;
 @whui-border: @border-color-split;
 @whui-border-strong: @border-color-base;
@@ -74,33 +75,11 @@
 
 @import './app-shared.less';
 
-// Tooltips keep antd's dark background even in the light theme, so their content
-// must stay light like the tooltip's own text. Re-map the on-surface text tokens
-// to their on-dark values within a tooltip, and keep buttons legible: text
-// buttons (the author's homepage/GitHub/X links) and the website "Get involved"
-// popup's ghost buttons.
-.ant-tooltip-inner {
-  --whui-text-muted: rgba(255, 255, 255, 0.65);
-  --whui-border-faint: rgba(255, 255, 255, 0.2);
-  // The tooltip background stays dark, so keep the bright star color the dark
-  // theme uses rather than the surface-tuned one.
-  --whui-rate-star: #fadb14;
-
-  .ant-btn-text {
-    color: rgba(255, 255, 255, 0.85);
-  }
-}
-
 // Card and list descriptions follow the shared muted-text token so they pick up
 // the theme's deeper light-mode value instead of antd's lighter default.
 .ant-card-meta-description,
 .ant-list-item-meta-description {
   color: var(--whui-text-muted);
-}
-
-.ant-tooltip .ant-btn.ant-btn-background-ghost {
-  color: #fff;
-  border-color: fade(@white, 25%);
 }
 
 // The dark Prism stylesheet (prism-vsc-dark-plus) is loaded globally, so give

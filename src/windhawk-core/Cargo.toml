@@ -20,7 +20,7 @@ members = [
 ]
 
 [workspace.package]
-version = "2.0.0-alpha.5"
+version = "2.0.0-alpha.6"
 edition = "2024"
 rust-version = "1.96"
 publish = false
@@ -50,8 +50,8 @@ windhawk-core-client = { path = "core-client" }
 windhawk-core-host = { path = "core-host" }
 # The runtime-broker transport: a length-prefixed JSON channel over a duplex
 # named pipe, with the unprivileged end as the pipe server and the privileged one
-# as the pipe client. Outside the core layering, like the bridge and the referee:
-# no core crate at all, and nothing Windhawk-specific - it is generic over the
+# as the pipe client. Outside the core layering, like the bridge: no core crate
+# at all, and nothing Windhawk-specific - it is generic over the
 # request/response/push types so it is testable over an in-process pipe pair.
 windhawk-broker = { path = "broker" }
 
@@ -84,7 +84,7 @@ thiserror = "2.0"
 # (matching js-yaml, the TS implementation we replace), where saphyr silently
 # keeps the last value. default-features off drops the `encoding` feature
 # (encoding_rs); the core feeds the parser &str it decoded itself.
-yaml-rust2 = { version = "0.11", default-features = false }
+yaml-rust2 = { version = "0.13", default-features = false }
 # Raw Win32 bindings for the adapter and ffi crates. Pinned to the version the
 # rest of the tree already resolves to, so the workspace edge adds no version of
 # its own; the Tauri UI and the embed-resource build chain still pull 0.59/0.60,
@@ -125,15 +125,19 @@ embed-resource = "3"
 # bridges the webview envelope protocol to core C-ABI invokes. windhawk-ui is
 # x64/ARM64 only, so it is excluded from the i686 build; the i686 production
 # core stays for the Electron extension. tauri-build is the build-script half
-# (codegen + ACL).
-tauri = { version = "2", features = [] }
-tauri-build = { version = "2", features = [] }
+# (codegen + ACL). tauri-runtime-wry is the webview runtime the app selects on
+# the builder, and the home of the wry extension traits shell.rs reaches the
+# WebView2 controller through. Tauri 3 is on its alpha line; it is what carries
+# tao 0.37 and wry 0.57, which the UI's window handling is written against.
+tauri = { version = "3.0.0-alpha.2", features = [] }
+tauri-build = { version = "3.0.0-alpha.1", features = [] }
+tauri-runtime-wry = { version = "3.0.0-alpha.2", features = [] }
 # The launcher contract + external-link shim: single-instance makes a bare
 # re-launch ensure-running-and-foreground (and `--quit` ask the running instance
 # to exit); opener routes the front-end's external links to the system browser.
-# Both are ui-crate-only, tracking tauri 2.
-tauri-plugin-single-instance = { version = "2", features = [] }
-tauri-plugin-opener = { version = "2", features = [] }
+# Both are ui-crate-only, tracking tauri 3.
+tauri-plugin-single-instance = { version = "3.0.0-alpha.1", features = [] }
+tauri-plugin-opener = { version = "3.0.0-alpha.1", features = [] }
 # The WebView2 COM bindings + safe event-handler wrappers. ui-crate-only; pinned
 # to the version already in the tauri transitive tree (no duplicate, no new
 # license/advisory). Used in shell.rs to disable a few browser shortcuts (print,
@@ -141,20 +145,21 @@ tauri-plugin-opener = { version = "2", features = [] }
 # AcceleratorKeyPressed event, and to trim the context menu to back/forward plus
 # the input clipboard items via its ContextMenuRequested event, both reached
 # through Tauri's `with_webview`.
-webview2-com = "0.38"
+webview2-com = "0.39"
 # The windows-rs COM core (the `Interface` trait + `PWSTR`), needed by shell.rs to
 # QueryInterface the WebView2 controller's core object up to ICoreWebView2_11 (which
 # carries ContextMenuRequested) and to read each menu item's name. ui-crate-only; pinned
-# to "0.61", the exact version webview2-com already pulls (windows-core 0.61.2), so the
+# to "0.62", the exact version webview2-com, wry, and tao already pull, so the
 # `Interface` impls on the ICoreWebView2* types match and no new version/duplicate enters
 # the tree.
-windows-core = "0.61"
+windows-core = "0.62"
 # The ergonomic windows-rs bindings (RAII COM wrappers), used by the UI's native file
 # dialog (ui/src/file_dialog.rs: IFileOpenDialog/IFileSaveDialog for user-data
-# export/import). ui-crate-only; pinned to "0.61", the exact version webview2-com already
-# pulls (windows 0.61.3), so it adds no new crate/version to the tree. Features are
-# enabled on the consuming crate.
-windows = "0.61"
+# export/import). ui-crate-only; pinned to "0.62", the exact version webview2-com, wry,
+# and tao already pull, so it adds no new crate/version to the tree (tauri-plugin-opener
+# still pulls a 0.61 beside it, a duplicate cargo-deny warns on). Features are enabled
+# on the consuming crate.
+windows = "0.62"
 # The `log` facade, which the Tauri/wry window stack reports through. It reports a
 # window or webview that fails to build there and then DISCARDS it - the build
 # answers Ok regardless - so the UI installs a small capture of the last few

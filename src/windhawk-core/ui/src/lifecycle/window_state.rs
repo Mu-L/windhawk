@@ -183,7 +183,7 @@ impl OpeningGeometry {
     /// answer whenever this cannot be applied.
     ///
     /// Asked for on every launch, including the ones with no rectangle to hold the
-    /// window to: the creation hook also carries the window's activation, which every
+    /// window to: the creation hook also gives the window its icons, which every
     /// launch wants.
     pub fn prepare_creation(&self) {
         window::prepare_main_window_creation(self.exact, self.maximized);

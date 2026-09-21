@@ -16,10 +16,9 @@
 //! Output is REQUEST order (the order the architectures were declared, with the
 //! empty default expanding to `[x86, x86-64]`): the x86-64 arch under
 //! arm64-enabled emits X86_64 THEN Aarch64. All three callers share this one
-//! order. Compile-target ORDER is not parity-pinned (the compile parity check
-//! sorts), only the per-(mod, version, target) argv is; the download fetch order
-//! (observable via its first-failure error) stays request order because that is
-//! what this leaf emits.
+//! order. Compile-target ORDER is not a contract, only the per-(mod, version,
+//! target) argv is; the download fetch order (observable via its first-failure
+//! error) stays request order because that is what this leaf emits.
 
 use serde::Deserialize;
 

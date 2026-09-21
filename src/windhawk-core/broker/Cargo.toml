@@ -6,12 +6,12 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
-# Outside the core layering, like the bridge and the referee: no core crate at
-# all. This is a transport and nothing else - it is generic over the request,
-# response, and push types and knows no Windhawk command, which is what makes it
-# testable over an in-process pipe pair with a fake handler. serde/serde_json
-# encode and decode the caller's frame types; windows-sys is the named pipe, the
-# overlapped I/O, the security descriptor, and the peer token/process queries.
+# Outside the core layering, like the bridge: no core crate at all. This is a
+# transport and nothing else - it is generic over the request, response, and
+# push types and knows no Windhawk command, which is what makes it testable over
+# an in-process pipe pair with a fake handler. serde/serde_json encode and
+# decode the caller's frame types; windows-sys is the named pipe, the overlapped
+# I/O, the security descriptor, and the peer token/process queries.
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }

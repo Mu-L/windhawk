@@ -1,6 +1,7 @@
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck: ignore TS errors due to lack of types for react-diff-view and refractor
 
+import usePersistedFlag from '@app/panel/shared/usePersistedFlag';
 import {
   faArrowsAltV,
   faLongArrowAltDown,
@@ -199,6 +200,8 @@ const UnfoldCollapsed = ({
 const MemoizedHunk = memo(Hunk);
 const MemoizedUnfoldCollapsed = memo(UnfoldCollapsed);
 
+const SPLIT_VIEW_STORAGE_KEY = 'sourceDiffSplitView';
+
 interface Props {
   oldSource: string;
   newSource: string;
@@ -209,7 +212,9 @@ function ModDetailsSource(props: Props) {
 
   const { oldSource, newSource } = props;
 
-  const [splitView, setSplitView] = useState(true);
+  const [splitView, toggleSplitView] = usePersistedFlag(
+    SPLIT_VIEW_STORAGE_KEY
+  );
 
   const { type, hunks } = useMemo(() => {
     const diffText = formatLines(diffLines(oldSource, newSource), {
@@ -305,10 +310,7 @@ function ModDetailsSource(props: Props) {
     <ConfigProvider direction="ltr">
       <ConfigurationWrapper>
         <span>{t('modDetails.changes.splitView')}</span>
-        <Switch
-          checked={splitView}
-          onChange={(checked) => setSplitView(checked)}
-        />
+        <Switch checked={splitView} onChange={toggleSplitView} />
       </ConfigurationWrapper>
       <DiffWrapper>
         <Diff

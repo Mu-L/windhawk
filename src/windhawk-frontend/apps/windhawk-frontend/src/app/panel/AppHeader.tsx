@@ -17,7 +17,7 @@ import { useTranslation } from 'react-i18next';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import styled from 'styled-components';
 import logo from './assets/logo-white.svg';
-/// #if WEBSITE
+/// #if !APP
 import { appLanguages } from '@app/constants/languages';
 import { setLanguage } from '@app/i18n';
 import { useTheme } from '@app/theme';
@@ -124,7 +124,7 @@ const LogoTextHidden = styled.span`
   visibility: hidden;
 `;
 
-/// #if EXTENSION
+/// #if APP
 type HeaderButton = {
   text: string;
   route: string;
@@ -136,7 +136,7 @@ type HeaderButton = {
   };
 };
 
-function AppHeaderExtension() {
+function AppHeaderHosted() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
@@ -202,9 +202,7 @@ function AppHeaderExtension() {
     </Header>
   );
 }
-/// #endif
-
-/// #if WEBSITE
+/// #else
 type HeaderButtonWebsite = {
   text: string;
   route: string;
@@ -319,10 +317,10 @@ function AppHeaderBrowser() {
 }
 /// #endif
 
-declare const WEBPACK_IS_WEBSITE: boolean;
+declare const WEBPACK_IS_APP: boolean;
 
 function AppHeader() {
-  return WEBPACK_IS_WEBSITE ? <AppHeaderBrowser /> : <AppHeaderExtension />;
+  return WEBPACK_IS_APP ? <AppHeaderHosted /> : <AppHeaderBrowser />;
 }
 
 export default AppHeader;

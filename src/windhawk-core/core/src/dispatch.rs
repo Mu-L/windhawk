@@ -152,6 +152,15 @@ static COMMANDS: &[CommandSpec] = &[
         contract: true,
         handler: Handler::Sync(services::mods::set_mod_logging_enabled),
     },
+    // A read of the mod's local-storage tree (the `$dynamicSelect` options a
+    // mod writes at runtime), under the same shared lock as `getModSettings`.
+    CommandSpec {
+        name: "getModDynamicSelectOptions",
+        kind: CommandKind::Sync,
+        locks: LockSpec::Mod { write: false },
+        contract: true,
+        handler: Handler::Sync(services::mods::get_mod_dynamic_select_options),
+    },
     // Use-case lifecycle: the enable/disable and uninstall flows. Both take the
     // exclusive keyed `Mod` lock and mirror into the profile (rank 2, internal)
     // for non-local mods.
@@ -232,6 +241,29 @@ static COMMANDS: &[CommandSpec] = &[
         contract: true,
         handler: Handler::Sync(services::profile::get_profile_watch_info),
     },
+    // Review votes: single-mod profile writes and a read, under that mod's
+    // keyed lock like setModRating.
+    CommandSpec {
+        name: "voteModReview",
+        kind: CommandKind::Sync,
+        locks: LockSpec::Mod { write: true },
+        contract: true,
+        handler: Handler::Sync(services::reviews::vote_mod_review),
+    },
+    CommandSpec {
+        name: "retractModReviewVote",
+        kind: CommandKind::Sync,
+        locks: LockSpec::Mod { write: true },
+        contract: true,
+        handler: Handler::Sync(services::reviews::retract_mod_review_vote),
+    },
+    CommandSpec {
+        name: "getModReviewVotes",
+        kind: CommandKind::Sync,
+        locks: LockSpec::Mod { write: false },
+        contract: true,
+        handler: Handler::Sync(services::reviews::get_mod_review_votes),
+    },
     // Repository network commands. Leaf services with no stored state, so no
     // command lock; each runs on its operation thread and terminates with a
     // completed/failed event.
@@ -308,6 +340,23 @@ static COMMANDS: &[CommandSpec] = &[
         locks: LockSpec::None,
         contract: true,
         handler: Handler::Stateless(services::compiler::flags::get_compile_flags),
+    },
+    // A host query over the `Fonts` port: no stored state, so no lock.
+    CommandSpec {
+        name: "listFontFamilies",
+        kind: CommandKind::Sync,
+        locks: LockSpec::None,
+        contract: true,
+        handler: Handler::Sync(services::fonts::list_font_families),
+    },
+    // A host capture over the `HotkeyCapture` port: no stored state, so no
+    // lock; the session's one-at-a-time rule is the service's own slot.
+    CommandSpec {
+        name: "captureHotkey",
+        kind: CommandKind::Async,
+        locks: LockSpec::None,
+        contract: true,
+        handler: Handler::Async(services::hotkey::prepare_capture_hotkey),
     },
     // User-data export/import. Export aggregates read-only reads (no command
     // lock, like listInstalledMods); inspect is pure over the archive string, so

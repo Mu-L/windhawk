@@ -186,6 +186,26 @@ impl Storage {
             }
         }
     }
+
+    /// Mod local-storage tree: the `[LocalStorage]` section of the mod-writable
+    /// INI file / `<root>\Engine\ModsWritable\<modId>\LocalStorage` - where the
+    /// engine's `GetModWritableConfig(modName, L"LocalStorage", ..)`
+    /// (`engine/storage_manager.cpp`) lands a mod's `Wh_SetStringValue` /
+    /// `Wh_SetIntValue` writes. Read-only here (`getModDynamicSelectOptions`);
+    /// the rename and the uninstall move or remove the whole parent through
+    /// `mod_writable_tree`, so the subtree needs no lifecycle of its own.
+    pub fn mod_local_storage_tree(&self, mod_id: &str) -> TreeLocation {
+        if self.portable() {
+            TreeLocation::Ini {
+                file: self.mod_writable_ini_path(mod_id),
+                section: "LocalStorage".to_owned(),
+            }
+        } else {
+            TreeLocation::Registry {
+                sub_key: format!("Engine\\ModsWritable\\{mod_id}\\LocalStorage"),
+            }
+        }
+    }
 }
 
 /// `getCoreInfo`: contract/core versions, portable flag, resolved paths,

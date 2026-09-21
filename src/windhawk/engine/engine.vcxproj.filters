@@ -302,6 +302,9 @@
     <ClInclude Include="process_lists.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="..\shared\session_metadata.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="rsrc.rc">

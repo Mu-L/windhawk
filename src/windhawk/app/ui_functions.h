@@ -10,8 +10,4 @@ int GetSystemMetricsForWindow(HWND hWnd, int nIndex);
 bool IsRightToLeftLanguage(LANGID langId);
 void ApplyDialogLayoutRtl(CWindow wnd, bool isLayoutRtl);
 
-// Opts the process into following the system dark/light setting for popup
-// (context) menus. Relies on undocumented uxtheme exports.
-void EnableDarkModeMenus();
-
 }  // namespace Functions

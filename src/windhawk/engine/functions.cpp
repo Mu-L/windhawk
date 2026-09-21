@@ -12,8 +12,12 @@ bool IsProcessBlockingNonMicrosoftBinaries(HANDLE hProcess) {
         return false;
     }
 
-    return policy.MicrosoftSignedOnly || policy.StoreSignedOnly ||
-           policy.MitigationOptIn;
+    // Two configurations set these flags without blocking unsigned images and
+    // must not be skipped: audit-only mode (an audit flag with MitigationOptIn,
+    // but neither signer flag), and packaged apps (StoreSignedOnly without
+    // MitigationOptIn). Blocking needs an enforcing signer flag and OptIn both.
+    return policy.MitigationOptIn &&
+           (policy.MicrosoftSignedOnly || policy.StoreSignedOnly);
 }
 
 // Based on:

@@ -159,7 +159,7 @@ function MonacoYamlEditor({
             // The Tauri shell (WebView2) drives the clipboard natively and the website
             // bundles no Monaco, so this is VSCode-only.
 
-            /// #if EXTENSION && !TAURI
+            /// #if VSCODE
             // Add copy action (Ctrl+C)
             editor.addAction({
               id: 'editor.action.clipboardCopyActionWithExecCommand',

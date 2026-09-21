@@ -53,6 +53,104 @@ export interface TypeMismatchError {
 export const INT32_MIN = -2147483648;
 export const INT32_MAX = 2147483647;
 
+/**
+ * The `$min` / `$max` a number setting declares, each absent when it declares
+ * none. Both the form control and the YAML validator hold the value to them,
+ * inclusive; a stored value outside them is shown as it is, not rejected.
+ */
+export type SettingBounds = {
+  min?: number;
+  max?: number;
+};
+
+/**
+ * The bounds an item declares, or undefined for one declaring none.
+ */
+export function settingBounds(
+  item: Pick<InitialSettingItem, 'min' | 'max'>
+): SettingBounds | undefined {
+  if (item.min === undefined && item.max === undefined) {
+    return undefined;
+  }
+  return { min: item.min, max: item.max };
+}
+
+/**
+ * Whether a number lies within the bounds, inclusive; anything lies within
+ * none.
+ */
+export function withinBounds(value: number, bounds: SettingBounds | undefined): boolean {
+  return (
+    (bounds?.min === undefined || value >= bounds.min) &&
+    (bounds?.max === undefined || value <= bounds.max)
+  );
+}
+
+/**
+ * The range as a mismatch names it beside the type: `between 1 and 5`,
+ * `at least 0.5`, `at most 1`; empty for no bounds.
+ */
+export function describeBounds(bounds: SettingBounds | undefined): string {
+  if (bounds?.min !== undefined && bounds.max !== undefined) {
+    return `between ${bounds.min} and ${bounds.max}`;
+  }
+  if (bounds?.min !== undefined) {
+    return `at least ${bounds.min}`;
+  }
+  if (bounds?.max !== undefined) {
+    return `at most ${bounds.max}`;
+  }
+  return '';
+}
+
+/**
+ * The range a slider is drawn over: both bounds, with `min` below `max`. A
+ * number declaring one bound or none gives a rail no ends, and one declaring
+ * the two equal gives it nothing to slide, so neither has a range.
+ */
+export type SliderRange = {
+  min: number;
+  max: number;
+};
+
+export function sliderRange(bounds: SettingBounds | undefined): SliderRange | undefined {
+  if (bounds?.min === undefined || bounds.max === undefined || bounds.min >= bounds.max) {
+    return undefined;
+  }
+  return { min: bounds.min, max: bounds.max };
+}
+
+/**
+ * The step a slider over the range moves by: 1 on an integer item, and on a
+ * `$float` one the largest power of ten that gives the range at least a
+ * hundred positions - `0.01` over `0..1`, `0.1` over `0..10`, `1` over
+ * `0..255`. A value between steps is typed into the field beside the slider.
+ */
+export function sliderStep(range: SliderRange, float: boolean): number {
+  if (!float) {
+    return 1;
+  }
+  return 10 ** Math.floor(Math.log10((range.max - range.min) / 100));
+}
+
+// How many decimals a number is spelled with, `1e-7` read as seven.
+function decimalsOf(n: number): number {
+  const [mantissa, exponent = '0'] = String(n).split('e');
+  const fraction = mantissa.split('.')[1]?.length ?? 0;
+  return Math.max(0, fraction - Number(exponent));
+}
+
+/**
+ * A value the slider reports, rounded to the decimals its positions are
+ * spelled with - the step's, or a bound's where a bound has more, since the
+ * positions are counted off `min` - so a drag over `0..1` writes `0.51` and
+ * never `0.5100000000000001`.
+ */
+export function roundToSliderStep(value: number, range: SliderRange, step: number): number {
+  const decimals = Math.max(decimalsOf(step), decimalsOf(range.min), decimalsOf(range.max));
+  return Number(value.toFixed(decimals));
+}
+
 // ============================================================================
 // Setting Type Descriptors
 // ============================================================================
@@ -216,6 +314,24 @@ export function parseIntLax(value?: string | number | null) {
 }
 
 /**
+ * The finite number a `$float` setting's text spells, or null for text that
+ * spells none - an empty one included, which is how an unset setting reads. The
+ * same reading everywhere the setting is judged: the YAML validator, the form's
+ * canonical comparison, and the control's own tidying on blur.
+ */
+export function parseFloatText(value?: string | number | null): number | null {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  const text = (value ?? '').trim();
+  if (text === '') {
+    return null;
+  }
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
  * Helper to check if a value is a plain object (not array, not null)
  */
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -275,10 +391,14 @@ function settingsKeyPaths(settings: ModSettings): Set<string> {
 export class YamlSchemaValidator {
   private validKeys: Set<string>;
   private typeSchema: Map<string, string>;
+  // The `$min` / `$max` of the number settings that declare them, keyed the
+  // way typeSchema is.
+  private boundsSchema: Map<string, SettingBounds>;
 
   constructor(initialSettings: InitialSettings) {
     this.validKeys = this.buildValidKeys(initialSettings);
     this.typeSchema = this.buildTypeSchema(initialSettings);
+    this.boundsSchema = this.buildBoundsSchema(initialSettings);
   }
 
   private buildValidKeys(settings: InitialSettings, prefix = ''): Set<string> {
@@ -306,6 +426,8 @@ export class YamlSchemaValidator {
       const key = prefix ? `${prefix}.${item.key}` : item.key;
       const descriptor = describeSetting(item.value);
 
+      // A `$float` setting is a string leaf to the parse, and its own type
+      // here: the document spells it as a number, which a string would refuse.
       switch (descriptor.kind) {
         case SettingType.Boolean:
           schema.set(key, 'boolean');
@@ -314,7 +436,7 @@ export class YamlSchemaValidator {
           schema.set(key, 'number');
           break;
         case SettingType.String:
-          schema.set(key, 'string');
+          schema.set(key, item.float ? 'float' : 'string');
           break;
         case SettingType.NestedObject:
         case SettingType.ObjectArray: {
@@ -331,12 +453,89 @@ export class YamlSchemaValidator {
           schema.set(key, 'number[]');
           break;
         case SettingType.StringArray:
-          schema.set(key, 'string[]');
+          schema.set(key, item.float ? 'float[]' : 'string[]');
           break;
       }
     }
 
     return schema;
+  }
+
+  private buildBoundsSchema(
+    settings: InitialSettings,
+    prefix = ''
+  ): Map<string, SettingBounds> {
+    const schema = new Map<string, SettingBounds>();
+
+    for (const item of settings) {
+      const key = prefix ? `${prefix}.${item.key}` : item.key;
+      const bounds = settingBounds(item);
+      if (bounds) {
+        schema.set(key, bounds);
+      }
+      const descriptor = describeSetting(item.value);
+      if (
+        descriptor.kind === SettingType.NestedObject ||
+        descriptor.kind === SettingType.ObjectArray
+      ) {
+        this.buildBoundsSchema(descriptor.children, key).forEach((nested, nestedKey) =>
+          schema.set(nestedKey, nested)
+        );
+      }
+    }
+
+    return schema;
+  }
+
+  /**
+   * The path the schema declares a flat key under: the key with its indices
+   * removed, so a row of an object array and an element of an array both read
+   * the declaration they were made from.
+   */
+  private declaredPath(flatKey: string): string {
+    return flatKey.replace(/\[\d+\]/g, '');
+  }
+
+  /**
+   * Whether a flat key names a `$float` setting.
+   */
+  private isFloatKey(flatKey: string): boolean {
+    const type = this.typeSchema.get(this.declaredPath(flatKey));
+    return type === 'float' || type === 'float[]';
+  }
+
+  /**
+   * A number outside the bounds its setting declares, as a mismatch naming the
+   * range; null for one within them, or for a setting declaring none.
+   */
+  private rangeError(
+    fullKey: string,
+    value: number,
+    kind: 'integer' | 'number'
+  ): TypeMismatchError | null {
+    const bounds = this.boundsSchema.get(this.declaredPath(fullKey));
+    if (withinBounds(value, bounds)) {
+      return null;
+    }
+    return {
+      key: fullKey,
+      expected: `${kind} ${describeBounds(bounds)}`,
+      actual: String(value),
+    };
+  }
+
+  /**
+   * `flat` with every `$float` setting's value as the text the store holds:
+   * a document spells the setting as a bare number, and a number would be saved
+   * as a 32-bit integer, which is not what the setting is.
+   */
+  floatsAsStoredText(flat: ModSettings): ModSettings {
+    const stored: ModSettings = emptySettingsMap();
+    for (const [key, value] of Object.entries(flat)) {
+      stored[key] =
+        typeof value === 'number' && this.isFloatKey(key) ? String(value) : value;
+    }
+    return stored;
   }
 
   /**
@@ -420,6 +619,10 @@ export class YamlSchemaValidator {
       return this.validateBoolean(fullKey, value);
     }
 
+    if (expectedType === 'float') {
+      return this.validateFloat(fullKey, value);
+    }
+
     // A group, checked by shape rather than by name: `typeof null` is 'object'
     // too, so a bare `group:` would pass the comparison below and be written out
     // as a flat key holding null - a value neither the store nor the mod reading
@@ -454,20 +657,43 @@ export class YamlSchemaValidator {
       return null;
     }
 
-    // A scalar reads better named than typed ("got 5"), but an object or an
-    // array has no useful rendering, so those fall back to the type. A string is
-    // quoted: unquoted, "got true" would name a value the setting accepts and
-    // read as if the check itself were broken.
-    let actual: string;
-    if (isPlainObject(value) || Array.isArray(value)) {
-      actual = this.getActualType(value);
-    } else if (typeof value === 'string') {
-      actual = JSON.stringify(value);
-    } else {
-      actual = String(value);
+    return { key: fullKey, expected: 'true, false, 0 or 1', actual: this.describeValue(value) };
+  }
+
+  /**
+   * A `$float` setting reads a YAML number, or a string spelling one - the form
+   * quoted it, or the store handed back the text it holds - or the empty string
+   * an unset one is written as. Nothing non-finite: `.inf` would be stored as
+   * the text "Infinity", which no mod parses as a number.
+   */
+  private validateFloat(fullKey: string, value: NestedValue): TypeMismatchError | null {
+    if (value === '') {
+      return null;
+    }
+    const parsed =
+      typeof value === 'number' || typeof value === 'string' ? parseFloatText(value) : null;
+    if (parsed !== null) {
+      return this.rangeError(fullKey, parsed, 'number');
     }
 
-    return { key: fullKey, expected: 'true, false, 0 or 1', actual };
+    return { key: fullKey, expected: 'number', actual: this.describeValue(value) };
+  }
+
+  /**
+   * A value as a mismatch names it, for a check that accepts more than one type
+   * and so cannot name the type alone. A scalar reads better named than typed
+   * ("got 5"), but an object or an array has no useful rendering, so those fall
+   * back to the type. A string is quoted: unquoted, "got true" would name a
+   * value a boolean accepts and read as if the check itself were broken.
+   */
+  private describeValue(value: NestedValue): string {
+    if (isPlainObject(value) || Array.isArray(value)) {
+      return this.getActualType(value);
+    }
+    if (typeof value === 'string') {
+      return JSON.stringify(value);
+    }
+    return String(value);
   }
 
   /**
@@ -484,7 +710,7 @@ export class YamlSchemaValidator {
       value >= INT32_MIN &&
       value <= INT32_MAX
     ) {
-      return null;
+      return this.rangeError(fullKey, value, 'integer');
     }
 
     return { key: fullKey, expected: '32-bit integer', actual: String(value) };
@@ -516,6 +742,12 @@ export class YamlSchemaValidator {
         }
         const typeError = this.validateTypes(item, fullKey);
         if (typeError) return typeError;
+        continue;
+      }
+
+      if (elementType === 'float') {
+        const floatError = this.validateFloat(itemKey, item);
+        if (floatError) return floatError;
         continue;
       }
 
@@ -691,8 +923,12 @@ export class YamlConverter {
       switch (descriptor.kind) {
         case SettingType.Boolean:
         case SettingType.Number:
-        case SettingType.String:
           ordered[key] = this.normalizePrimitiveValue(existingValue, descriptor);
+          break;
+        case SettingType.String:
+          ordered[key] = item.float
+            ? this.normalizeFloatValue(existingValue)
+            : this.normalizePrimitiveValue(existingValue, descriptor);
           break;
         case SettingType.NestedObject:
           ordered[key] = this.normalizeNestedObject(existingValue, descriptor.children);
@@ -704,7 +940,9 @@ export class YamlConverter {
           ordered[key] = this.normalizePrimitiveArray(existingValue, descriptor.defaultValue, this.isNumberValue);
           break;
         case SettingType.StringArray:
-          ordered[key] = this.normalizePrimitiveArray(existingValue, descriptor.defaultValue, this.isStringValue);
+          ordered[key] = item.float
+            ? this.normalizeFloatArray(existingValue)
+            : this.normalizePrimitiveArray(existingValue, descriptor.defaultValue, this.isStringValue);
           break;
       }
 
@@ -851,6 +1089,31 @@ export class YamlConverter {
     }
 
     return defaultValue;
+  }
+
+  /**
+   * A `$float` setting is held as text and shown as the number that text
+   * spells, so an author reads `opacity: 0.85` rather than a quoted string.
+   * Text spelling no number - a value the store held before the setting was a
+   * float - is left as it is, for the validator to name on the way back rather
+   * than be read as some number it is not.
+   */
+  private static normalizeFloatValue(value: NestedValue | undefined): string | number {
+    const text = this.normalizeStringValue(value, '');
+    const parsed = parseFloatText(text);
+    return parsed === null ? text : parsed;
+  }
+
+  private static normalizeFloatArray(value: NestedValue | undefined): (string | number)[] {
+    const existingArray = Array.isArray(value) ? value : [];
+    const highestIndex = Math.max(this.highestDefinedIndex(existingArray), 0);
+    const result: (string | number)[] = [];
+
+    for (let index = 0; index <= highestIndex; index += 1) {
+      result[index] = this.normalizeFloatValue(existingArray[index]);
+    }
+
+    return result;
   }
 
   /**
@@ -1031,7 +1294,10 @@ export class YamlConverter {
         };
       }
 
-      return { settings: this.nestedToFlat(parsed as NestedSettings), error: null };
+      return {
+        settings: validator.floatsAsStoredText(this.nestedToFlat(parsed as NestedSettings)),
+        error: null,
+      };
     } catch (error) {
       return {
         settings: null,

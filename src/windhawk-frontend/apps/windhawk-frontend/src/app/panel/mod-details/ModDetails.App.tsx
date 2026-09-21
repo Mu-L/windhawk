@@ -46,8 +46,8 @@ export type ModActionCallbacks = {
   updateModRating: (newRating: number) => void;
 };
 
-// Extension-only state and callbacks
-export type ExtensionProps = {
+// App-only state and callbacks
+export type ModDetailsAppProps = {
   // The mod as the host lists it, absent for one that is not on the machine. The
   // entry whole rather than the parts this screen reads: `latestVersion` is the
   // version the repository holds as the host last cached it, which is what lets
@@ -78,19 +78,19 @@ interface Props {
   repositoryModDetails?: RepositoryModDetails;
   goBack?: () => void;
 
-  // Extension-specific props (all grouped together)
-  extensionProps?: ExtensionProps;
+  // App-specific props (all grouped together)
+  appProps?: ModDetailsAppProps;
 }
 
-export function ModDetailsExtension({ modId, repositoryModDetails, goBack, extensionProps }: Props) {
-  if (!extensionProps) {
-    throw new Error('ModDetailsExtension requires extensionProps');
+export function ModDetailsApp({ modId, repositoryModDetails, goBack, appProps }: Props) {
+  if (!appProps) {
+    throw new Error('ModDetailsApp requires appProps');
   }
 
-  // Extract extension data
-  const installedModDetails = extensionProps.installedModDetails;
-  const loadRepositoryData = extensionProps.loadRepositoryData;
-  const modActions = extensionProps.actions;
+  // Extract app data
+  const installedModDetails = appProps.installedModDetails;
+  const loadRepositoryData = appProps.loadRepositoryData;
+  const modActions = appProps.actions;
 
   // One source per version this screen can show, keyed by the view that shows
   // it, so a view added to the state is one this has to answer for.
@@ -464,14 +464,14 @@ export function ModDetailsExtension({ modId, repositoryModDetails, goBack, exten
     };
   }
 
-  const extensionViewProps = {
+  const appViewProps = {
     // The mod as it sits on the machine and which version is on screen, which
     // the tabs and the version selector read as well as the header.
     state,
     // What the header draws and what runs behind it, or null for a screen that
     // wires none of it - which is also what takes the version selector away.
     headerActions,
-    remembersActiveTab: !!extensionProps.remembersActiveTab,
+    remembersActiveTab: !!appProps.remembersActiveTab,
 
     // Version selector state
     repositoryStatus,
@@ -490,7 +490,7 @@ export function ModDetailsExtension({ modId, repositoryModDetails, goBack, exten
       modSourceData={modSourceData}
       installedModSourceData={sourceDataMap.installed}
       selectedModSourceData={selectedModSourceData}
-      extensionViewProps={extensionViewProps}
+      appViewProps={appViewProps}
       onRetryLoad={() => {
         // The failure this sits under can be either side's - the tab that diffs
         // them shows one Result for both - and the screen does not carry which,

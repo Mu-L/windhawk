@@ -5,12 +5,7 @@ import styled, { css } from 'styled-components';
 import AppHeader from './AppHeader';
 import usePopupDismissOnScroll from './usePopupDismissOnScroll';
 import { ModsBrowserOnline } from './mods-browser';
-/// #if WEBSITE
-import AppFooter from './AppFooter';
-import WebsiteHome from './WebsiteHome';
-import Download from './Download';
-import Links from './Links';
-/// #else
+/// #if APP
 import { About } from './about';
 import { ModPreview, ModsBrowserLocal } from './mods-browser';
 import SafeModeIndicator from './SafeModeIndicator';
@@ -18,12 +13,20 @@ import { Settings } from './settings';
 import { CreateNewModButton } from './shared';
 import { InstallDevToolsModal } from './shared/InstallDevToolsModal';
 import useKeyboardShortcut from './shared/useKeyboardShortcut';
+/// #else
+import AppFooter from './AppFooter';
+import WebsiteHome from './WebsiteHome';
+import Download from './Download';
+import Links from './Links';
 /// #endif
 /// #if TAURI
+import { deepLinkToRoute } from '@app/deepLink';
+import { takeInitialDeepLink } from '@app/tauriApi';
+import DeepLinkNavigator from './DeepLinkNavigator';
 import LogPaneMount from './logpane/LogPaneMount';
 /// #endif
 
-declare const WEBPACK_IS_WEBSITE: boolean;
+declare const WEBPACK_IS_APP: boolean;
 declare const WEBPACK_IS_TAURI: boolean;
 
 const PanelContainer = styled.div`
@@ -66,7 +69,18 @@ const ContentContainer = styled.div`
   flex-direction: column;
 `;
 
-/// #if WEBSITE
+/// #if APP
+function ContentWrapperApp({
+  ref,
+  ...props
+}: React.ComponentProps<'div'> & { $hidden?: boolean }) {
+  return (
+    <ContentContainerScroll ref={ref} {...props}>
+      <ContentContainer>{props.children}</ContentContainer>
+    </ContentContainerScroll>
+  );
+}
+/// #else
 function ContentWrapperBrowser({
   ref,
   ...props
@@ -82,20 +96,7 @@ function ContentWrapperBrowser({
 }
 /// #endif
 
-/// #if EXTENSION
-function ContentWrapperExtension({
-  ref,
-  ...props
-}: React.ComponentProps<'div'> & { $hidden?: boolean }) {
-  return (
-    <ContentContainerScroll ref={ref} {...props}>
-      <ContentContainer>{props.children}</ContentContainer>
-    </ContentContainerScroll>
-  );
-}
-/// #endif
-
-const ContentWrapper = WEBPACK_IS_WEBSITE ? ContentWrapperBrowser : ContentWrapperExtension;
+const ContentWrapper = WEBPACK_IS_APP ? ContentWrapperApp : ContentWrapperBrowser;
 
 function ContentWrapperWithOutlet() {
   return (
@@ -105,7 +106,7 @@ function ContentWrapperWithOutlet() {
   );
 }
 
-/// #if EXTENSION
+/// #if APP
 function KeyboardNavigationHandler() {
   const navigate = useNavigate();
 
@@ -127,65 +128,8 @@ function KeyboardNavigationHandler() {
 }
 /// #endif
 
-/// #if WEBSITE
-function LayoutWebsite() {
-  return (
-    <>
-      <NavigationBlockHost />
-      <AppHeader />
-      <Outlet />
-    </>
-  );
-}
-
-const routeConfigWebsite = [
-  {
-    path: '/',
-    element: <LayoutWebsite />,
-    children: [
-      {
-        index: true,
-        element: <WebsiteHome ContentWrapper={ContentWrapper} />,
-      },
-      {
-        path: 'mods',
-        element: <ModsBrowserOnline ContentWrapper={ContentWrapper} />,
-        children: [
-          {
-            path: ':modId',
-            element: null,
-          },
-        ],
-      },
-      {
-        path: 'links',
-        element: (
-          <ContentWrapper>
-            <Links />
-          </ContentWrapper>
-        ),
-      },
-      {
-        path: 'download',
-        element: (
-          <ContentWrapper>
-            <Download />
-          </ContentWrapper>
-        ),
-      },
-    ],
-  },
-  {
-    path: '*',
-    element: <Navigate to="/" replace />,
-  },
-];
-
-const routerWebsite = createBrowserRouter(routeConfigWebsite);
-/// #endif
-
-/// #if EXTENSION
-function LayoutExtension() {
+/// #if APP
+function LayoutApp() {
   return (
     <>
       <NavigationBlockHost />
@@ -210,10 +154,23 @@ if (previewModId) {
   window.history.replaceState(null, '', url);
 }
 
-const routeConfigExtension = [
+/// #if TAURI
+// Likewise for the windhawk:// link the native shell was launched with: seeded
+// here, before the router exists, so the first page drawn is the mod's.
+if (WEBPACK_IS_TAURI) {
+  const link = takeInitialDeepLink();
+  if (link) {
+    const url = new URL(window.location.href);
+    url.hash = '#' + deepLinkToRoute(link);
+    window.history.replaceState(null, '', url);
+  }
+}
+/// #endif
+
+const routeConfigApp = [
   {
     path: '/',
-    element: <LayoutExtension />,
+    element: <LayoutApp />,
     children: [
       {
         path: '',
@@ -277,23 +234,80 @@ const routeConfigExtension = [
   },
 ];
 
-const routerExtension = createHashRouter(routeConfigExtension);
+const routerApp = createHashRouter(routeConfigApp);
+/// #else
+function LayoutWebsite() {
+  return (
+    <>
+      <NavigationBlockHost />
+      <AppHeader />
+      <Outlet />
+    </>
+  );
+}
+
+const routeConfigWebsite = [
+  {
+    path: '/',
+    element: <LayoutWebsite />,
+    children: [
+      {
+        index: true,
+        element: <WebsiteHome ContentWrapper={ContentWrapper} />,
+      },
+      {
+        path: 'mods',
+        element: <ModsBrowserOnline ContentWrapper={ContentWrapper} />,
+        children: [
+          {
+            path: ':modId',
+            element: null,
+          },
+        ],
+      },
+      {
+        path: 'links',
+        element: (
+          <ContentWrapper>
+            <Links />
+          </ContentWrapper>
+        ),
+      },
+      {
+        path: 'download',
+        element: (
+          <ContentWrapper>
+            <Download />
+          </ContentWrapper>
+        ),
+      },
+    ],
+  },
+  {
+    path: '*',
+    element: <Navigate to="/" replace />,
+  },
+];
+
+const routerWebsite = createBrowserRouter(routeConfigWebsite);
 /// #endif
 
-const router = WEBPACK_IS_WEBSITE ? routerWebsite : routerExtension;
+const router = WEBPACK_IS_APP ? routerApp : routerWebsite;
 
 function Panel() {
   usePopupDismissOnScroll();
 
   // In the Tauri shell the log pane docks as a resizable bottom split, so the router
-  // content is wrapped to fill the space above it. Other builds keep the plain
-  // full-height layout (the LogPaneMount import is compiled out for them).
+  // content is wrapped to fill the space above it, and a windhawk:// link
+  // forwarded to the running app navigates the router. Other builds keep the
+  // plain full-height layout (the Tauri imports are compiled out for them).
   if (WEBPACK_IS_TAURI) {
     return (
       <PanelContainer>
         <MainArea>
           <RouterProvider router={router} />
         </MainArea>
+        <DeepLinkNavigator router={router} />
         <LogPaneMount />
       </PanelContainer>
     );
